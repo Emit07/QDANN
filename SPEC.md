@@ -209,7 +209,8 @@ Counting `Linear` modules:
 reading of "input layer" that gives exactly ten; see `AMBIGUITIES.md` #9.
 
 BatchNorm1d + ReLU + Dropout(0.5) between hidden layers; not after the final output layer of
-either head.
+either head. Whether `G_f`'s 32-wide output is itself activated is not stated; implemented with
+a ReLU and no BatchNorm or dropout. See `AMBIGUITIES.md` #12.
 
 ### Hyperparameters (§3.1)
 

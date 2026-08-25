@@ -219,3 +219,26 @@ term by orders of magnitude and the adversarial branch stops mattering — the m
 degrades to source-only training. Only reachable once the VAE exists.
 
 `implementation_choice`
+
+---
+
+## 12. Whether G_f's output is activated
+
+**Paper.** §3.1: "The batch normalization layer and dropout layer (with a ratio of 0.5) are used
+between hidden layers." G_f's 64->32 output layer is not a hidden layer, so nothing is said
+about what follows it.
+
+**Problem.** Taken literally, G_f's final Linear is followed by nothing, and each head begins
+with a Linear — so `64->32` and `32->64` compose into a single linear map and the depth-ten
+network has one fewer nonlinearity than its layer count suggests.
+
+**Choice.** ReLU on the 32-d bottleneck; no BatchNorm and no dropout there, since §3.1 confines
+those to hidden layers. DANN implementations conventionally expose a post-activation feature
+representation to the discriminator.
+
+**Impact if wrong.** Small. It costs one nonlinearity on a 27-feature problem. Worth knowing
+about because it slightly changes what "domain-invariant features" means: the discriminator
+sees a non-negative representation either way under this choice, and an unconstrained one
+without it.
+
+`implementation_choice`
