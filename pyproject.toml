@@ -1,0 +1,31 @@
+[project]
+name = "qdann"
+version = "0.1.0"
+description = "Clean-room reimplementation of QDANN (Ma et al., RSE 2024) for subfield crop yield mapping"
+readme = "README.md"
+authors = [
+    { name = "emit07", email = "emit07@protonmail.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "numpy>=2.5.2",
+    "torch==2.9.1",
+]
+
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
