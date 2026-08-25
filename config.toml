@@ -1,0 +1,43 @@
+# QDANN hyperparameters, each tagged with where the value comes from.
+#
+#   paper_specified       stated outright in Ma et al. (2024); see SPEC.md for the section
+#   reasonable_assumption the paper is silent and this is a defensible default
+#   implementation_choice we knowingly diverge, or the paper's setup has no public equivalent
+#
+# Read with stdlib tomllib. Every reasonable_assumption and implementation_choice has an
+# entry in AMBIGUITIES.md giving the expected direction of impact.
+
+[model]
+n_features     = { value = 27, src = "paper_specified" }              # 7 harmonic + 20 weather, SPEC 1
+feature_hidden = { value = [64, 64, 64, 64], src = "paper_specified" }
+feature_out    = { value = 32, src = "paper_specified" }
+head_hidden    = { value = [64, 64], src = "paper_specified" }
+dropout        = { value = 0.5, src = "paper_specified" }
+
+[train]
+lambda_          = { value = 1.0, src = "paper_specified" }           # Eq. 3
+epochs           = { value = 400, src = "paper_specified" }
+weight_update_at = { value = 200, src = "paper_specified" }           # M
+quantiles        = { value = [0.1, 0.5, 0.9], src = "paper_specified" }
+
+# never stated in the paper
+optimizer     = { value = "adam", src = "reasonable_assumption" }
+learning_rate = { value = 1e-3, src = "reasonable_assumption" }
+batch_size    = { value = 256, src = "reasonable_assumption" }
+weight_init   = { value = "pytorch_default", src = "reasonable_assumption" }
+
+# knowing divergences
+grl_schedule      = { value = "constant", src = "implementation_choice" }             # Ganin ramps lambda; paper says flat 1
+feature_scaling   = { value = "standardize_on_source", src = "implementation_choice" }
+batchnorm_domains = { value = "shared", src = "implementation_choice" }               # one mixed batch, not per-domain BN
+
+[data]
+target_sample_unit = { value = "pixel", src = "implementation_choice" }  # paper uses Corteva field
+                                                                        # boundaries; no public equivalent
+
+[vae]
+# Eqs. 12-16. Architecture is never given; see AMBIGUITIES.md #5.
+latent_dim    = { value = 8, src = "reasonable_assumption" }
+hidden        = { value = [64, 32], src = "reasonable_assumption" }
+loss_reduction = { value = "weighted_mean", src = "implementation_choice" }  # Eq. 16 prints an
+                                                                            # unnormalized sum
