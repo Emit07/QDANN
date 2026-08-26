@@ -50,7 +50,9 @@ def test_suppressed_and_pooled_and_unpaired_rows_are_dropped() -> None:
         production_rows=[
             row(county_ansi=ansi, unit_desc="BU", Value="180")
             if ansi != "005"
-            else row(county_ansi=ansi, unit_desc="BU", Value="(D)")  # production withheld
+            else row(
+                county_ansi=ansi, unit_desc="BU", Value="(D)"
+            )  # production withheld
             for ansi in counties
         ],
         crop="maize",

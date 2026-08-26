@@ -22,7 +22,6 @@ import urllib.request
 
 import pandas
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -85,9 +84,13 @@ def get_rows(params: tuple[tuple[str, str], ...]) -> list[dict[str, str]]:
             return []
         # the key rides in the query string, so report the parameters without it
         redacted = [(name, value) for name, value in params if name != "key"]
-        raise RuntimeError(f"Quick Stats {exc.code:d} on {redacted}: {body[:200]}") from None
+        raise RuntimeError(
+            f"Quick Stats {exc.code:d} on {redacted}: {body[:200]}"
+        ) from None
     rows = list(csv.DictReader(io.StringIO(body)))
-    assert len(rows) < RECORD_LIMIT, f"{len(rows):d} records hit the cap; split the query"
+    assert len(rows) < RECORD_LIMIT, (
+        f"{len(rows):d} records hit the cap; split the query"
+    )
     return rows
 
 
@@ -170,7 +173,9 @@ def fetch(crop: str, years: range, state_fips: tuple[str, ...]) -> pandas.DataFr
         get_rows(common + (("statisticcat_desc", statisticcat_desc),))
         for statisticcat_desc in ("AREA HARVESTED", "PRODUCTION")
     )
-    logger.info(f"{len(area_rows):d} area and {len(production_rows):d} production records")
+    logger.info(
+        f"{len(area_rows):d} area and {len(production_rows):d} production records"
+    )
     return to_yield_t_ha(
         area_rows=area_rows, production_rows=production_rows, crop=crop
     )
@@ -188,7 +193,9 @@ def main() -> int:
     )
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--crop", choices=sorted(CROP_TO_COMMODITY_DESC), default="maize")
+    parser.add_argument(
+        "--crop", choices=sorted(CROP_TO_COMMODITY_DESC), default="maize"
+    )
     parser.add_argument("--years", type=year_range, default=year_range("2008-2018"))
     parser.add_argument("--state", nargs=argparse.ONE_OR_MORE, default=["19"])
     parser.add_argument("--out", type=pathlib.Path)

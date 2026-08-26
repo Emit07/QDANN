@@ -14,6 +14,23 @@ Two places where the code deliberately departs from the printed equations are ma
 
 ## 1. Features (27 per sample)
 
+### 2.1 — study area and window
+
+The paper states these in prose; they size every export and set what `t` is normalized over.
+
+| | States | Years | Landsat window |
+|---|---|---|---|
+| Maize, soybean | IA, IL, IN, OH, MN, MO, SD, WI | 2008-2018 | Jan 1 - Dec 31 of the study year |
+| Winter wheat | CO, KS, NE, ND, OK, TX, MI, MO, IN, IL, OH, SD, WI | 2008-2022 | Sep 1 (prior year) - Aug 31 |
+
+Nebraska is absent from the maize/soybean list, which is what §2.1 says. The 2008 start is
+set by CDL, which only reaches national coverage that year, so no earlier yield can be
+paired with a crop mask.
+
+For winter wheat the window straddles two calendar years and **the CDL year is the harvest
+year**: CDL for year Y labels wheat planted in Y-1, so the Sep-Dec half of the window is
+masked by the following year's CDL.
+
 ### Eq. 1 — vegetation index
 
 ```
