@@ -8,7 +8,7 @@ A clean-room reimplementation of the Quantile-loss Domain Adversarial Neural Net
 
 **Not affiliated with or endorsed by the authors.** The published model code was never released;
 this is written from the paper alone. The authors' yield maps are distributed separately under
-CC-BY-NC-SA 4.0 and are **not** used as an input here — this implementation trains only on
+CC-BY-NC-SA 4.0 and are **not** used as an input here, this implementation trains only on
 public-domain data (USDA NASS Quick Stats, Landsat, gridMET, USDA CDL), so its outputs carry no
 non-commercial restriction.
 
