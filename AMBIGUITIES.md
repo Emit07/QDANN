@@ -145,8 +145,9 @@ the county-holdout validation plan.
 
 ## 8. Landsat Collection 1 `pixel_qa` vs. Collection 2 `QA_PIXEL`
 
-**Paper.** §2.2 describes cloud masking without naming the QA band or collection. The work
-predates the Collection 1 retirement.
+**Paper.** §2.2 names both, one paragraph apart: "The Collection 2 data was used", and two
+sentences earlier the band `pixel_qa`, which is the Collection 1 name. The paragraph
+contradicts itself rather than being silent, which is the stronger evidence of the two.
 
 **Problem.** Collection 1 is decommissioned. Collection 2 L2 renamed the band `pixel_qa` ->
 `QA_PIXEL` with different bit positions, and surface reflectance now needs the scale factor
@@ -275,3 +276,50 @@ target domain has the most subfield pixels, so the shift is partly self-correcti
 sees fewer marginal-cropland county-years than the region actually contains.
 
 `implementation_choice`
+
+---
+
+## 14. Mean reflectance first, GCVI second
+
+**Paper.** §2.2 is explicit about the order: the CDL mask is applied, "the remaining data were
+then aggregated to the county level by calculating the mean reflectance value for each band.
+After that", GCVI is computed.
+
+**Problem.** GCVI is a ratio, so `mean(NIR) / mean(green) - 1` is not `mean(NIR / green - 1)`.
+The two differ by Jensen's inequality and the gap grows with the variance of green within the
+county -- exactly what a county of mixed soil and canopy has. The paper's order is followed
+here, but it forces a second decision: a ratio of means cannot be computed per pixel and then
+averaged, so the harmonic fit has to happen client-side on an extracted series rather than
+server-side per pixel.
+
+**Choice.** Reduce green and NIR separately per (county, date), divide afterwards, fit Eq. 2 on
+the resulting series. The target domain runs the identical code path over a single pixel.
+
+**Impact if wrong.** Moderate on its own, severe if the two domains disagree. A source-target
+difference in this order would manufacture a marginal shift of exactly the kind the adversarial
+branch exists to remove, so the model would spend its capacity undoing a processing artefact.
+
+`implementation_choice`
+
+---
+
+## 15. Which CDL codes count as the crop
+
+**Paper.** §2.2 says only that CDL was used to mask "irrelevant land covers". It does not list
+codes.
+
+**Problem.** CDL carries single-crop codes (1 maize, 5 soybeans, 24 winter wheat) and separate
+double-crop codes where a winter crop and a summer crop share the year: 26 winter wheat /
+soybeans, 225 winter wheat / corn, 236 winter wheat / sorghum, 238 winter wheat / cotton. A
+double-cropped field's NASS production is reported under both commodities, so excluding those
+codes drops area that the county yield denominator still contains.
+
+**Choice.** Single-crop codes only.
+
+**Impact if wrong.** Negligible for Corn Belt maize and soybean, where double cropping is rare.
+Material for winter wheat in Kansas and Oklahoma, where wheat-then-soybean and wheat-then-sorghum
+are common: those counties get a crop mask smaller than their reported wheat area, so their
+county-mean GCVI is drawn from a non-representative subset of their wheat. Revisit before
+trusting the winter wheat leg; it does not affect the maize result this repo validates first.
+
+`implementation_choice` -- crop-dependent, harmless today, revisit for wheat.

@@ -14,13 +14,14 @@ import collections
 import csv
 import io
 import logging
-import os
 import pathlib
 import urllib.error
 import urllib.parse
 import urllib.request
 
 import pandas
+
+from qdann import env
 
 logger = logging.getLogger(__name__)
 
@@ -56,19 +57,6 @@ KEPT_UTIL_PRACTICE_DESCS = frozenset({"GRAIN", "ALL UTILIZATION PRACTICES"})
 SUPPRESSED_VALUES = frozenset({"(D)", "(Z)", "(S)", "(NA)"})
 
 DATA_DIR = pathlib.Path(__file__).parents[2] / "data"
-
-
-def load_api_key() -> str:
-    """Read USDA_NASS_API_KEY from the environment, falling back to the repo's .env."""
-    if key := os.environ.get("USDA_NASS_API_KEY"):
-        return key
-    dot_env = DATA_DIR.parent / ".env"
-    if dot_env.exists():
-        for line in dot_env.read_text().splitlines():
-            name, _, value = line.partition("=")
-            if name.strip() == "USDA_NASS_API_KEY":
-                return value.strip().strip("\"'")
-    raise SystemExit(f"USDA_NASS_API_KEY is in neither the environment nor {dot_env}")
 
 
 def get_rows(params: tuple[tuple[str, str], ...]) -> list[dict[str, str]]:
@@ -154,7 +142,7 @@ def to_yield_t_ha(
 def fetch(crop: str, years: range, state_fips: tuple[str, ...]) -> pandas.DataFrame:
     """County-year yields for one crop, as columns fips / year / yield_t_ha."""
     common = (
-        ("key", load_api_key()),
+        ("key", env.get("USDA_NASS_API_KEY")),
         ("source_desc", "SURVEY"),
         ("sector_desc", "CROPS"),
         ("agg_level_desc", "COUNTY"),
