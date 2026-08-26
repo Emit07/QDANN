@@ -54,7 +54,13 @@ Yields **7 coefficients** = `c` + `a_1..a_3` + `b_1..b_3`. These are the satelli
 
 ### Weather (§2.3) — 20 features
 
-Five gridMET variables at 4 km, resampled to 30 m: `ppt`, `srad`, `tmmx`, `tmmn`, `vpd`.
+Five gridMET variables at 4 km, resampled to 30 m: `ppt`, `srad`, `tmmx`, `tmmn`, `vpd`. The
+gridMET band for precipitation is `pr`; `ppt` is the PRISM spelling.
+
+The 30 m resampling is what the **subfield** samples need -- each pixel takes the value of the
+4 km cell containing it. The county leg does not do it: a county mean taken at gridMET's native
+~4638 m (`projection().nominalScale()`) is the same quantity without the upsampling. The two
+paragraphs are not in conflict; the resampling only ever mattered on the target side.
 
 Monthly means over the growing season, which is crop-dependent:
 

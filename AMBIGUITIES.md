@@ -323,3 +323,28 @@ county-mean GCVI is drawn from a non-representative subset of their wheat. Revis
 trusting the winter wheat leg; it does not affect the maize result this repo validates first.
 
 `implementation_choice` -- crop-dependent, harmless today, revisit for wheat.
+
+---
+
+## 16. "Monthly mean" precipitation over a daily total
+
+**Paper.** §2.3 lists five gridMET variables and takes the "monthly mean" of each over the
+growing season.
+
+**Problem.** Four of the five are daily state variables whose monthly mean is the obvious
+quantity: `srad`, `tmmn`, `tmmx`, `vpd`. `pr` is not -- it is a daily precipitation *total* in
+mm, so its monthly mean is a mean daily rainfall rate, while the agronomically meaningful
+figure is the monthly accumulation. The paper writes `ppt`, which is the PRISM spelling, and
+never says which of the two it took.
+
+**Choice.** The mean, uniformly, as written. Each month is its own feature column and the day
+count is fixed within a column, so the mean is the sum times a constant: monotone in rainfall,
+and identical to the sum once the features are standardized.
+
+**Impact if wrong.** None for maize and soybean, whose May-August months are 31/30/31/31 days.
+February's length varies across the study years, so for a crop window that included it the two
+would differ slightly between leap and common years -- winter wheat starts in March, so this
+does not arise here either. Recorded so the mean is not "fixed" to a sum, which would rescale
+one feature column against the config's standardization without changing anything it predicts.
+
+`implementation_choice` -- equivalent under standardization; do not change it silently.
