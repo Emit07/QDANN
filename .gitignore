@@ -1,0 +1,22 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Data and artifacts
+data/
+*.parquet
+*.csv
+*.pt
+
+# Papers are referenced by DOI, never vendored (Elsevier copyright)
+*.pdf
+
+# Credentials (Quick Stats API key, Earth Engine project)
+.env

@@ -242,3 +242,36 @@ sees a non-negative representation either way under this choice, and an unconstr
 without it.
 
 `implementation_choice`
+
+---
+
+## 13. Missing county yields are dropped, not backfilled from a coarser tier
+
+**Paper.** §2.1 says the source labels are county-level NASS yields and says nothing about
+counties NASS does not publish. Table 1 gives 6154 maize / 6217 soybean / 3572 winter wheat
+county-year samples, which is well short of every county in the study area for every year.
+
+**Problem.** NASS suppresses a county-year whose value would identify an operation (Title 7
+U.S.C., CIPSEA), returning `(D)`, `(Z)`, `(S)` or `(NA)`. Something has to fill or drop those.
+
+**Choice.** Drop them. A county-year keeps a label only where both its own AREA HARVESTED and
+its own PRODUCTION survived suppression. No fallback to the agricultural district or the state,
+and no averaging across years.
+
+**Rationale.** A district- or state-tier fallback would inject exactly the spatial aggregation
+the model is trained to undo: the label would carry a coarser support than the features, and the
+scale transfer would be learning to reproduce an aggregation artifact. Multi-year averaging would
+break the pairing with a specific year's harmonics and weather.
+
+**Also recorded here.** Yield is reconstructed as PRODUCTION / AREA HARVESTED rather than read
+from the YIELD statistic, because below the state level wheat is published only per class and the
+ALL CLASSES yield does not exist. It covers more counties than YIELD does, and gives all three
+crops one code path.
+
+**Impact if wrong.** Moderate, and it biases the sample rather than corrupting it. Dropping
+suppressed cells skews the source set toward counties with enough operations to escape
+suppression — larger, more intensively cropped counties. Those are also the counties where the
+target domain has the most subfield pixels, so the shift is partly self-correcting, but the model
+sees fewer marginal-cropland county-years than the region actually contains.
+
+`implementation_choice`
