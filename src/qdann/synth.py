@@ -12,8 +12,7 @@ whether the adversarial branch recovers accuracy that a source-only model loses.
 
 import torch
 
-from qdann.losses import QUANTILES, domain_loss, quantile_loss, update_quantile_weights
-from qdann.model import QDANN
+from qdann import train
 
 
 N_FEATURES = 27
@@ -47,62 +46,11 @@ def make_domains(
     return (source_x - mean) / std, source_y, (target_x - mean) / std, target_y
 
 
-def fit(
-    source_x: torch.Tensor,
-    source_y: torch.Tensor,
-    target_x: torch.Tensor,
-    adversarial: bool,
-    epochs: int = 400,
-    weight_update_at: int = 200,
-    batch_size: int = 256,
-    learning_rate: float = 1e-3,
-    seed: int = 0,
-) -> QDANN:
-    """Train QDANN, or the same model with the adversarial branch switched off.
-
-    Both arms see the same mixed source-and-target batches, so BatchNorm statistics are
-    identical and the only difference between them is the domain loss and the reversed
-    gradient it sends back through G_f.
-    """
-    torch.manual_seed(seed)
-    model = QDANN(n_features=source_x.shape[1], lambda_=1.0 if adversarial else 0.0)
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    weights = dict.fromkeys(QUANTILES, 1.0)
-    for epoch in range(epochs):
-        if epoch == weight_update_at:
-            model.eval()
-            with torch.no_grad():
-                weights = update_quantile_weights(y=source_y, yhat=model(source_x)[0])
-            model.train()
-        for batch in torch.randperm(len(source_x)).split(batch_size):
-            targets = target_x[torch.randint(len(target_x), (len(batch),))]
-            # one mixed batch, so the discriminator cannot separate the domains on
-            # per-domain normalization statistics (AMBIGUITIES.md #6)
-            yhat, logit = model(torch.cat([source_x[batch], targets]))
-            loss = quantile_loss(
-                y=source_y[batch], yhat=yhat[: len(batch)], weights=weights
-            )
-            if adversarial:
-                loss = loss + domain_loss(
-                    logit=logit,
-                    d=torch.cat([torch.ones(len(batch)), torch.zeros(len(batch))]),
-                )
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-    return model.eval()
-
-
-def r_squared(y: torch.Tensor, yhat: torch.Tensor) -> float:
-    """Eq. 17."""
-    return float(1 - ((y - yhat) ** 2).sum() / ((y - y.mean()) ** 2).sum())
-
-
 def evaluate(n: int = 2000, seed: int = 0) -> dict[str, float]:
     source_x, source_y, target_x, target_y = make_domains(n=n, seed=seed)
     scores = {}
     for name, adversarial in (("source_only", False), ("qdann", True)):
-        model = fit(
+        model = train.fit(
             source_x=source_x,
             source_y=source_y,
             target_x=target_x,
@@ -110,7 +58,7 @@ def evaluate(n: int = 2000, seed: int = 0) -> dict[str, float]:
             seed=seed,
         )
         with torch.no_grad():
-            scores[name] = r_squared(y=target_y, yhat=model(target_x)[0])
+            scores[name] = train.r_squared(y=target_y, yhat=model(target_x)[0])
     return scores
 
 

@@ -348,3 +348,30 @@ does not arise here either. Recorded so the mean is not "fixed" to a sum, which 
 one feature column against the config's standardization without changing anything it predicts.
 
 `implementation_choice` -- equivalent under standardization; do not change it silently.
+
+---
+
+## 17. Whether the yield is standardized before the quantile loss
+
+**Paper.** §3.1 standardizes the input features and says nothing about the label. Eq. 7 is
+written directly on yield, and Fig. 6 plots predictions in kg/ha.
+
+**Problem.** Eq. 7 sums three pinball losses, each of whose gradient with respect to the
+prediction is a constant of magnitude q or 1-q; Adam then divides by the gradient's own
+running magnitude. The size of a parameter step is therefore set by the learning rate and not
+by how wrong the prediction is, so a head initialized near zero walks toward an 11 t/ha
+intercept at roughly one learning rate per step -- about ten thousand steps before the fit
+begins, on a county table that supplies four steps per epoch. A squared loss has no such
+problem, which is why this does not show up in the equations as printed.
+
+**Choice.** Standardize the label on the training counties, train on the standardized target,
+and invert before scoring, so R2 and RMSE stay in t/ha. The three pinball losses are
+positively homogeneous and Eqs. 8-11 depend only on the sign of the residual, so both the
+loss and the weight update are unchanged by the rescaling.
+
+**Impact if wrong.** None on the fitted function, which is why this is a scaling decision and
+not a modelling one. Undoing it does not make the model wrong, it makes it slow, and slow here
+looks exactly like a model that cannot beat the per-year mean -- a false negative on the one
+gate this stage exists to run.
+
+`implementation_choice` -- affects optimization only; keep the inverse transform with it.
