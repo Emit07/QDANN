@@ -52,6 +52,10 @@ NATIVE_SCALE_M = 30
 # a county mean this dark is not cropland, and dividing by it puts GCVI in the hundreds
 MIN_GREEN_REFLECTANCE = 0.01
 
+# what one fitted series is: a county-year for the source leg, a pixel-year for the target.
+# `weather.KEY_COLUMNS` is the same tuple and stays there -- weather imports gee, not back
+KEY_COLUMNS = ("fips", "year")
+
 
 def window(crop: str, year: int) -> tuple[str, str]:
     """The crop's observation window as [start, end), which Eq. 2 normalizes t over.
@@ -171,16 +175,21 @@ def county_means(
     return ee.FeatureCollection(images.map(per_image)).flatten()
 
 
-def build(crop: str, year: int, counties: ee.FeatureCollection) -> ee.FeatureCollection:
-    """The whole server-side reduction: one long table of (fips, year, date, green, nir)."""
-    region = counties.geometry()
-    cropland = (
+def cropland_mask(crop: str, year: int) -> ee.Image:
+    """The CDL crop mask for the year, band `cropland`, 1 where the crop is."""
+    return (
         ee.ImageCollection(CDL)
         .filterDate(f"{year}-01-01", f"{year + 1}-01-01")
         .first()
         .select("cropland")
         .eq(CROP_TO_CDL_CODE[crop])
     )
+
+
+def build(crop: str, year: int, counties: ee.FeatureCollection) -> ee.FeatureCollection:
+    """The whole server-side reduction: one long table of (fips, year, date, green, nir)."""
+    region = counties.geometry()
+    cropland = cropland_mask(crop=crop, year=year)
     dates = mosaic_by_date(reflectance(crop=crop, year=year, region=region))
     # the mask goes on the date mosaic rather than on each scene: once per date instead of
     # once per path/row, and it stays out of the sensor merge. CDL is categorical and sits
@@ -208,7 +217,9 @@ def to_frame(features: dict) -> pandas.DataFrame:
     return clean(pandas.DataFrame([f["properties"] for f in features["features"]]))
 
 
-def clean(long: pandas.DataFrame) -> pandas.DataFrame:
+def clean(
+    long: pandas.DataFrame, keys: tuple[str, ...] = KEY_COLUMNS
+) -> pandas.DataFrame:
     """Drop the rows Eq. 2 cannot use and attach GCVI.
 
     A county-date whose pixels are entirely masked reduces to a feature with green and nir
@@ -222,7 +233,7 @@ def clean(long: pandas.DataFrame) -> pandas.DataFrame:
     # Eq. 1
     return ret.assign(
         gcvi=ret["nir"] / ret["green"] - 1, fips=ret["fips"].astype(str)
-    ).loc[:, ["fips", "year", "date", "green", "nir", "gcvi"]]
+    ).loc[:, [*keys, "date", "green", "nir", "gcvi"]]
 
 
 def normalized_time(dates: pandas.Series, crop: str, year: int) -> pandas.Series:
@@ -230,25 +241,35 @@ def normalized_time(dates: pandas.Series, crop: str, year: int) -> pandas.Series
     return (pandas.to_datetime(dates) - start) / (end - start)
 
 
-def fit_table(long: pandas.DataFrame, crop: str) -> pandas.DataFrame:
-    """Fit Eq. 2 per (county, year), returning seven coefficient columns plus a count."""
+def fit_table(
+    long: pandas.DataFrame,
+    crop: str,
+    keys: tuple[str, ...] = KEY_COLUMNS,
+    min_observations: int | None = None,
+) -> pandas.DataFrame:
+    """Fit Eq. 2 per key group, returning seven coefficient columns plus a count.
+
+    The key is a county-year for the source leg and a pixel-year for the target; `keys`
+    must contain `year`, which sets the window t is normalized over.
+    """
     names = ["c", "a1", "b1", "a2", "b2", "a3", "b3"]
     rows = []
-    for (fips, year), group in long.groupby(["fips", "year"], sort=True):
+    for values, group in long.groupby(list(keys), sort=True):
+        key = dict(zip(keys, values, strict=True))
         # the cheap proof that mosaic_by_date actually ran: two scenes of one county on one
         # day would arrive here as two rows sharing a date
-        assert not group["date"].duplicated().any(), (
-            f"{fips} {year} has a repeated date"
-        )
+        assert not group["date"].duplicated().any(), f"{key} has a repeated date"
+        year = int(key["year"])
         coefficients = harmonics.fit(
-            t=normalized_time(group["date"], crop=crop, year=int(year)).to_numpy(),
+            t=normalized_time(group["date"], crop=crop, year=year).to_numpy(),
             y=group["gcvi"].to_numpy(),
+            min_observations=min_observations,
         )
         rows.append(
-            {"fips": fips, "year": int(year), "n_observations": len(group)}
+            {**key, "year": year, "n_observations": len(group)}
             | dict(zip(names, coefficients, strict=True))
         )
-    return pandas.DataFrame(rows, columns=["fips", "year", "n_observations", *names])
+    return pandas.DataFrame(rows, columns=[*keys, "n_observations", *names])
 
 
 def export(crop: str, years: range, state_fips: str) -> ee.batch.Task:

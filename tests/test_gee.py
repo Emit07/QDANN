@@ -91,3 +91,30 @@ def test_fit_table_shape_and_observation_count():
     # an integer round-trip would drop the leading zero of every state below 10
     assert pandas.api.types.is_string_dtype(table["fips"])
     assert table["fips"].iloc[0] == "19169"
+
+
+def test_fit_table_keys_a_pixel_year_not_just_a_county_year():
+    """The target leg fits one series per pixel, and two pixels share every date."""
+    dates = [f"2018-{m:02d}-{d:02d}" for m in range(1, 13) for d in (3, 19)]
+    keys = ("fips", "pid", "year")
+    long = pandas.concat(
+        [
+            _long(dates, gcvi=numpy.arange(len(dates)) + offset).assign(pid=pid)
+            for pid, offset in (("19169_2018_0", 0), ("19169_2018_1", 1))
+        ]
+    )
+    table = gee.fit_table(long=gee.clean(long, keys=keys), crop="maize", keys=keys)
+    assert list(table.columns)[:3] == list(keys)
+    assert len(table) == 2
+    # the offset lands entirely in the intercept, so the fit really was done per pixel
+    assert table["c"].diff().iloc[1] == pytest.approx(1.0)
+
+
+def test_the_observation_floor_returns_nan_rather_than_an_interpolating_fit():
+    """Seven dates fit seven coefficients exactly; Phase 3's floor is what rejects that."""
+    dates = [f"2018-{m:02d}-01" for m in range(1, 8)]
+    long = gee.clean(_long(dates))
+    assert gee.fit_table(long=long, crop="maize")["c"].notna().all()
+    floored = gee.fit_table(long=long, crop="maize", min_observations=12)
+    assert floored["c"].isna().all()
+    assert int(floored["n_observations"].iloc[0]) == 7
