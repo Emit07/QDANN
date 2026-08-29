@@ -98,6 +98,13 @@ def rmse(y: torch.Tensor, yhat: torch.Tensor) -> float:
     return float(((y - yhat) ** 2).mean().sqrt())
 
 
+def nrmse(y: torch.Tensor, yhat: torch.Tensor) -> float:
+    """Eq. 17: RMSE normalized by the observed mean, so crops at different yield scales
+    compare on one number. The paper doesn't fix a normalization convention; this is the
+    one standard in the crop-yield literature."""
+    return rmse(y=y, yhat=yhat) / float(y.mean())
+
+
 def split(
     table: pandas.DataFrame, holdout: float = HOLDOUT, seed: int = 0
 ) -> tuple[pandas.DataFrame, pandas.DataFrame]:
@@ -213,8 +220,10 @@ def evaluate(
     scores = {
         "r2": r_squared(y=test_y, yhat=yhat),
         "rmse": rmse(y=test_y, yhat=yhat),
+        "nrmse": nrmse(y=test_y, yhat=yhat),
         "per_year_mean_r2": r_squared(y=test_y, yhat=baseline),
         "per_year_mean_rmse": rmse(y=test_y, yhat=baseline),
+        "per_year_mean_nrmse": nrmse(y=test_y, yhat=baseline),
     }
     if rest:
         scores["domain_accuracy"] = domain_accuracy(
@@ -227,6 +236,7 @@ def report(name: str, scores: dict[str, float]) -> None:
     accuracy = scores.get("domain_accuracy")
     print(
         f"{name:>14s}  R2 {scores['r2']:6.3f}  RMSE {scores['rmse']:5.3f} t/ha"
+        f"  NRMSE {scores['nrmse']:5.3f}"
         f"  margin {scores['r2'] - scores['per_year_mean_r2']:+6.3f}"
         + ("" if accuracy is None else f"  domain acc {accuracy:.3f}")
     )
@@ -270,7 +280,8 @@ def main() -> int:
         report(name, scores)
     print(
         f"{'per-year mean':>14s}  R2 {scores['per_year_mean_r2']:6.3f}  "
-        f"RMSE {scores['per_year_mean_rmse']:5.3f} t/ha"
+        f"RMSE {scores['per_year_mean_rmse']:5.3f} t/ha  "
+        f"NRMSE {scores['per_year_mean_nrmse']:5.3f}"
     )
     return 0
 

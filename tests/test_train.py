@@ -38,6 +38,12 @@ def columns() -> list[str]:
     return [*weather.HARMONIC_COLUMNS, *weather.weather_columns("maize")]
 
 
+def test_nrmse_normalizes_rmse_by_the_mean_yield():
+    y = torch.tensor([8.0, 10.0, 12.0])
+    yhat = y + 1.0
+    assert train.nrmse(y, yhat) == pytest.approx(0.1)
+
+
 def test_whole_counties_are_held_out():
     trained, held = train.split(table())
     assert not set(trained["fips"]) & set(held["fips"])
