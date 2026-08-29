@@ -21,7 +21,7 @@ import numpy
 import pandas
 import torch
 
-from qdann import weather
+from qdann import vae, weather
 from qdann.losses import QUANTILES, domain_loss, quantile_loss, update_quantile_weights
 from qdann.model import QDANN
 
@@ -38,6 +38,7 @@ def fit(
     source_x: torch.Tensor,
     source_y: torch.Tensor,
     target_x: torch.Tensor | None = None,
+    sample_weights: torch.Tensor | None = None,
     adversarial: bool = False,
     epochs: int = 400,
     weight_update_at: int | None = None,
@@ -51,6 +52,8 @@ def fit(
     identical and the only difference between them is the domain loss and the reversed
     gradient it sends back through G_f. With no target domain there is nothing to mix in,
     and `target_x` is None.
+
+    `sample_weights` carries Eq. 16's 1/L_i, one per source row, in `source_x`'s order.
     """
     torch.manual_seed(seed)
     # Section 3.1 puts the Eq. 8-11 update partway through training, not at a fixed epoch
@@ -78,7 +81,14 @@ def fit(
                 # per-domain normalization statistics (AMBIGUITIES.md #6)
                 x = torch.cat([x, target_x[torch.randint(len(target_x), (n,))]])
             yhat, logit = model(x)
-            loss = quantile_loss(y=source_y[batch], yhat=yhat[:n], weights=weights)
+            loss = quantile_loss(
+                y=source_y[batch],
+                yhat=yhat[:n],
+                weights=weights,
+                sample_weights=(
+                    None if sample_weights is None else sample_weights[batch]
+                ),
+            )
             if adversarial:
                 loss = loss + domain_loss(
                     logit=logit, d=torch.cat([torch.ones(n), torch.zeros(n)])
@@ -173,6 +183,8 @@ def evaluate(
     seed: int = 0,
     target: pandas.DataFrame | None = None,
     adversarial: bool = False,
+    vae_filter: bool = False,
+    crop: str | None = None,
 ) -> dict[str, float]:
     """Fit one arm and score it on the held-out counties.
 
@@ -181,6 +193,10 @@ def evaluate(
     the ablation is meant to measure. The target pixels come from every county, held-out
     ones included -- UDA is transductive and the paper maps the region it trains on. Only
     the *labels* are held out, and the target has none.
+
+    `vae_filter` adds Section 3.2's step between the two: a VAE fitted on the target tensor
+    drops the training counties it cannot reconstruct and weights the survivors by 1/L_i.
+    It needs the target domain to train on and the crop to pick a threshold.
     """
     features = [
         column
@@ -205,11 +221,26 @@ def evaluate(
         torch.tensor(frame[weather.LABEL_COLUMN].to_numpy(), dtype=torch.float32)
         for frame in (train, test)
     )
+    train_y_std = (train_y - mean) / std
+
+    sample_weights = None
+    if vae_filter:
+        assert rest and crop is not None, "the VAE filter needs a target domain and a crop"
+        errors = vae.reconstruction_error(
+            vae.fit(rest[0], epochs=epochs, seed=seed), train_x
+        )
+        keep = errors <= vae.filter_threshold(errors, crop)
+        logger.info(f"VAE filter keeps {int(keep.sum()):d} of {len(keep):d} source rows")
+        # `fit` shuffles the tensors it is handed, so filtering all three together here
+        # keeps the weights aligned with the rows they belong to
+        train_x, train_y_std = train_x[keep], train_y_std[keep]
+        sample_weights = 1.0 / errors[keep]
 
     model = fit(
         source_x=train_x,
-        source_y=(train_y - mean) / std,
+        source_y=train_y_std,
         target_x=rest[0] if rest else None,
+        sample_weights=sample_weights,
         adversarial=adversarial,
         epochs=epochs,
         seed=seed,

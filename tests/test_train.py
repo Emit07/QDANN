@@ -87,6 +87,44 @@ def test_the_model_beats_the_per_year_mean_on_a_county_signal():
     assert scores["rmse"] < scores["per_year_mean_rmse"]
 
 
+def test_the_vae_filter_drops_source_rows_and_still_scores():
+    """Wiring only: the paper's own ablation has the filter helping some crops and not
+    others, so there is no direction to assert on a synthetic generator."""
+    source = table()
+    target = source.copy()
+    source.loc[source.index[:20], columns()] *= 100.0
+    scores = train.evaluate(
+        source, epochs=20, target=target, vae_filter=True, crop="maize"
+    )
+    assert set(scores) == {
+        "r2",
+        "rmse",
+        "nrmse",
+        "per_year_mean_r2",
+        "per_year_mean_rmse",
+        "per_year_mean_nrmse",
+        "domain_accuracy",
+    }
+
+
+def test_sample_weights_reach_the_quantile_loss():
+    """A row weighted to nothing must not move the fit; one weighted alone must."""
+    x = torch.randn(64, weather.N_FEATURES)
+    y = x[:, 0].clone()
+    weights = torch.ones(64)
+    weights[0] = 1e-6
+    only_first = torch.full((64,), 1e-6)
+    only_first[0] = 1.0
+    kwargs = {"epochs": 30, "weight_update_at": 99, "batch_size": 64}
+    models = [
+        train.fit(source_x=x, source_y=y, sample_weights=w, **kwargs)
+        for w in (weights, only_first)
+    ]
+    with torch.no_grad():
+        a, b = (model(x)[0] for model in models)
+    assert float((a - b).abs().mean()) > 1e-3
+
+
 class _SignDiscriminator:
     """A model whose discriminator reads feature 0's sign, so the metric has an answer."""
 
