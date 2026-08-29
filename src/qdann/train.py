@@ -22,7 +22,13 @@ import pandas
 import torch
 
 from qdann import vae, weather
-from qdann.losses import QUANTILES, domain_loss, quantile_loss, update_quantile_weights
+from qdann.losses import (
+    QUANTILES,
+    domain_loss,
+    mse_loss,
+    quantile_loss,
+    update_quantile_weights,
+)
 from qdann.model import QDANN
 
 logger = logging.getLogger(__name__)
@@ -40,6 +46,7 @@ def fit(
     target_x: torch.Tensor | None = None,
     sample_weights: torch.Tensor | None = None,
     adversarial: bool = False,
+    quantile: bool = True,
     epochs: int = 400,
     weight_update_at: int | None = None,
     batch_size: int = 256,
@@ -54,6 +61,9 @@ def fit(
     and `target_x` is None.
 
     `sample_weights` carries Eq. 16's 1/L_i, one per source row, in `source_x`'s order.
+    `quantile=False` swaps Eq. 7 for plain MSE: the Section 4.2 DNN baseline, and the arm of
+    Fig. 16 that removes the quantile loss. Eqs. 8-11 rebalance the three quantiles against
+    each other, so they are skipped along with it.
     """
     torch.manual_seed(seed)
     # Section 3.1 puts the Eq. 8-11 update partway through training, not at a fixed epoch
@@ -63,7 +73,7 @@ def fit(
     weights = dict.fromkeys(QUANTILES, 1.0)
     logger.info(f"quantile weights before epoch {weight_update_at:d}: {_show(weights)}")
     for epoch in range(epochs):
-        if epoch == weight_update_at:
+        if quantile and epoch == weight_update_at:
             model.eval()
             with torch.no_grad():
                 weights = update_quantile_weights(y=source_y, yhat=model(source_x)[0])
@@ -81,13 +91,18 @@ def fit(
                 # per-domain normalization statistics (AMBIGUITIES.md #6)
                 x = torch.cat([x, target_x[torch.randint(len(target_x), (n,))]])
             yhat, logit = model(x)
-            loss = quantile_loss(
-                y=source_y[batch],
-                yhat=yhat[:n],
-                weights=weights,
-                sample_weights=(
-                    None if sample_weights is None else sample_weights[batch]
-                ),
+            batch_weights = None if sample_weights is None else sample_weights[batch]
+            loss = (
+                quantile_loss(
+                    y=source_y[batch],
+                    yhat=yhat[:n],
+                    weights=weights,
+                    sample_weights=batch_weights,
+                )
+                if quantile
+                else mse_loss(
+                    y=source_y[batch], yhat=yhat[:n], sample_weights=batch_weights
+                )
             )
             if adversarial:
                 loss = loss + domain_loss(
@@ -113,6 +128,25 @@ def nrmse(y: torch.Tensor, yhat: torch.Tensor) -> float:
     compare on one number. The paper doesn't fix a normalization convention; this is the
     one standard in the crop-yield literature."""
     return rmse(y=y, yhat=yhat) / float(y.mean())
+
+
+def feature_columns(table: pandas.DataFrame) -> list[str]:
+    """The 27 feature columns of a source table: everything but the keys and the label."""
+    ret = [
+        column
+        for column in table.columns
+        if column not in (*weather.KEY_COLUMNS, weather.LABEL_COLUMN)
+    ]
+    assert len(ret) == weather.N_FEATURES, f"{len(ret):d} feature columns"
+    return ret
+
+
+def scores(y: torch.Tensor, yhat: torch.Tensor) -> dict[str, float]:
+    return {
+        "r2": r_squared(y=y, yhat=yhat),
+        "rmse": rmse(y=y, yhat=yhat),
+        "nrmse": nrmse(y=y, yhat=yhat),
+    }
 
 
 def split(
@@ -183,6 +217,7 @@ def evaluate(
     seed: int = 0,
     target: pandas.DataFrame | None = None,
     adversarial: bool = False,
+    quantile: bool = True,
     vae_filter: bool = False,
     crop: str | None = None,
 ) -> dict[str, float]:
@@ -197,14 +232,10 @@ def evaluate(
     `vae_filter` adds Section 3.2's step between the two: a VAE fitted on the target tensor
     drops the training counties it cannot reconstruct and weights the survivors by 1/L_i.
     It needs the target domain to train on and the crop to pick a threshold.
-    """
-    features = [
-        column
-        for column in table.columns
-        if column not in (*weather.KEY_COLUMNS, weather.LABEL_COLUMN)
-    ]
-    assert len(features) == weather.N_FEATURES, f"{len(features):d} feature columns"
 
+    `quantile=False` is Fig. 16's remaining arm; see `fit`.
+    """
+    features = feature_columns(table)
     train, test = split(table, seed=seed)
     logger.info(
         f"{len(train):d} rows / {train['fips'].nunique():d} counties train, "
@@ -242,25 +273,22 @@ def evaluate(
         target_x=rest[0] if rest else None,
         sample_weights=sample_weights,
         adversarial=adversarial,
+        quantile=quantile,
         epochs=epochs,
         seed=seed,
     )
     with torch.no_grad():
         yhat = model(test_x)[0] * std + mean
     baseline = per_year_mean(train, test)
-    scores = {
-        "r2": r_squared(y=test_y, yhat=yhat),
-        "rmse": rmse(y=test_y, yhat=yhat),
-        "nrmse": nrmse(y=test_y, yhat=yhat),
-        "per_year_mean_r2": r_squared(y=test_y, yhat=baseline),
-        "per_year_mean_rmse": rmse(y=test_y, yhat=baseline),
-        "per_year_mean_nrmse": nrmse(y=test_y, yhat=baseline),
+    ret = scores(y=test_y, yhat=yhat) | {
+        f"per_year_mean_{name}": value
+        for name, value in scores(y=test_y, yhat=baseline).items()
     }
     if rest:
-        scores["domain_accuracy"] = domain_accuracy(
+        ret["domain_accuracy"] = domain_accuracy(
             model, source_x=train_x, target_x=rest[0], seed=seed
         )
-    return scores
+    return ret
 
 
 def report(name: str, scores: dict[str, float]) -> None:

@@ -37,6 +37,23 @@ def quantile_loss(
     the domain term of Eq. 5, which lambda = 1 assumes. AMBIGUITIES.md #11.
     """
     per_sample = sum(w * pinball(y=y, yhat=yhat, q=q) for q, w in weights.items())
+    return _reduce(per_sample, sample_weights)
+
+
+def mse_loss(
+    y: torch.Tensor, yhat: torch.Tensor, sample_weights: torch.Tensor | None = None
+) -> torch.Tensor:
+    """The yield loss of the DNN baseline (Section 4.2) and of Fig. 16's ablation arm.
+
+    Reduced exactly as `quantile_loss` is, so that dropping the quantile loss does not also
+    silently drop the VAE filter's 1/L_i.
+    """
+    return _reduce((y - yhat) ** 2, sample_weights)
+
+
+def _reduce(
+    per_sample: torch.Tensor, sample_weights: torch.Tensor | None
+) -> torch.Tensor:
     if sample_weights is None:
         return per_sample.mean()
     return (sample_weights * per_sample).sum() / sample_weights.sum()

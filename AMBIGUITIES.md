@@ -512,3 +512,26 @@ Fig. 16 shows it costing accuracy on two of the three crops. A joint schedule wo
 variance across seeds.
 
 `reasonable_assumption` -- see #5 for the architecture and #11 for how `1/L_i` is normalized.
+
+---
+
+## 22. SCYM is not reproduced
+
+**Paper.** Section 4.2 compares QDANN against ridge regression, a random forest, a plain DNN
+and SCYM (Lobell et al. 2015; Deines et al. 2021), the last of these being a published
+30 m yield product rather than a model the paper trains.
+
+**Problem.** The first three are models: given the same 27 features and the same fold they can
+be fitted here and scored on the same held-out counties. SCYM is a scale-and-crop-specific
+regression calibrated against a crop model, distributed as a raster; reproducing its numbers
+means downloading that raster and reprojecting it onto this repo's counties, not writing a
+comparison model.
+
+**Choice.** Implement ridge, the random forest and the DNN in `baselines.py`; skip SCYM. The
+baseline table is therefore three rows where the paper's is four.
+
+**Impact if wrong.** None on QDANN's own numbers. It removes one external reference point:
+Section 4.2 uses SCYM to argue QDANN beats the published state of the art, and that claim is
+not re-tested here.
+
+`known_gap` -- a data-availability question, not a modelling decision.
