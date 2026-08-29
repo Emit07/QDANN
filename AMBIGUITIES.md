@@ -487,3 +487,28 @@ harmonic means displaced between the domains, and it must be ruled in or out the
 displacement is blamed on the aggregation, the mask, or the model.
 
 `known_gap` -- fix with the multi-state re-export; check `compare` before blaming anything else.
+
+---
+
+## 21. The VAE is trained on its own, before QDANN
+
+**Paper.** §3.2 says the VAE is trained on the target-domain feature vectors and that its
+per-sample reconstruction error filters and weights the source set (Eqs. 15-16). It does not
+say whether it is trained jointly with QDANN or beforehand.
+
+**Problem.** Trained jointly, the filter and the weights move every epoch: rows leave and
+re-enter the source set while the yield head is fitting them, and `1/L_i` is a moving target
+that the head can chase. Eqs. 15-16 read as a fixed preprocessing step -- `L_i` appears as a
+constant in the yield loss, not as a term with a gradient -- and the reconstruction loss shares
+no parameters with G_f, so joint training would buy nothing but the coupling.
+
+**Choice.** Train the VAE to convergence on the target tensor first, take `L_i` over the source
+rows once, then train QDANN on the filtered, weighted source set. `L_i` never changes during
+QDANN's training and no gradient flows from the yield loss into the VAE. It gets the same epoch
+budget and seed as the run it feeds.
+
+**Impact if wrong.** Small, and in the same direction as #5: this is the weakest component and
+Fig. 16 shows it costing accuracy on two of the three crops. A joint schedule would mostly add
+variance across seeds.
+
+`reasonable_assumption` -- see #5 for the architecture and #11 for how `1/L_i` is normalized.
