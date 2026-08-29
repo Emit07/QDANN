@@ -72,6 +72,17 @@ def monthly_means(crop: str, year: int) -> ee.Image:
     )
 
 
+def native_scale() -> ee.Number:
+    """gridMET's own ~4638 m grid, which both the county mean and the point read use."""
+    return (
+        ee.ImageCollection(GRIDMET)
+        .first()
+        .select(VARIABLES[0])
+        .projection()
+        .nominalScale()
+    )
+
+
 def county_means(
     crop: str, year: int, counties: ee.FeatureCollection
 ) -> ee.FeatureCollection:
@@ -82,13 +93,7 @@ def county_means(
     same quantity either way, so it is taken natively rather than off an upsampled grid.
     """
     image = monthly_means(crop=crop, year=year)
-    scale = (
-        ee.ImageCollection(GRIDMET)
-        .first()
-        .select(VARIABLES[0])
-        .projection()
-        .nominalScale()
-    )
+    scale = native_scale()
 
     def per_county(county: ee.Feature) -> ee.Feature:
         means = image.reduceRegion(

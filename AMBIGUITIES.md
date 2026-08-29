@@ -375,3 +375,115 @@ looks exactly like a model that cannot beat the per-year mean -- a false negativ
 gate this stage exists to run.
 
 `implementation_choice` -- affects optimization only; keep the inverse transform with it.
+
+---
+
+## 18. The observation floor Eq. 2 is fitted above, and why the target's is higher
+
+**Paper.** §2.2 fits the harmonic to "the growing-season time series" and reports roughly 20
+clear Landsat observations per season. It sets no minimum, and §3.1 does not say whether the
+subfield leg uses a different one from the county leg.
+
+**Problem.** Eq. 2 has 2n+1 = 7 coefficients. At exactly seven distinct dates the design
+matrix is square and the fit interpolates with zero residual, so `harmonics.fit`'s rank floor
+of 7 admits series that carry no information beyond the dates themselves. The two domains sit
+on opposite sides of this. A county mean survives a date if *any* pixel in the county is
+clear, which is why the committed county table has a median of 52 observations per county-year
+against §2.2's ~20; a single pixel needs itself clear, on a window that includes SLC-off
+Landsat 7 throughout. The county table also measures what the noise costs. Its 20
+worst-observed county-years (15-22 observations) against its best-observed 500:
+
+| coefficient | SD at ~17 obs | SD at ~55 obs |
+|---|---|---|
+| `c`  | 0.367 | 0.297 |
+| `a1` | 0.755 | 0.460 |
+| `a3` | 0.298 | 0.234 |
+| `b3` | 0.482 | 0.217 |
+
+The third harmonic is 2.2x noisier at 17 observations, in counties that do not behave that way
+in their well-observed years -- so it is fit noise, not signal. Left in, it inflates the target
+feature variance, and the marginal shift `G_d` sees would then be sampling noise rather than
+the aggregation gap the branch exists to remove. Phase 4 would look like it was working.
+
+**Choice.** `target.MIN_OBSERVATIONS = 20`, against the source leg's default of 7, and
+`--from-csv` prints the retained fraction at 7/12/15/20/25/30 so the number is chosen against
+the measured pixel histogram rather than against this file. Pixel-years below the floor get NaN
+coefficients from `harmonics.fit` and are dropped in `target.join`. If a defensible floor
+retains too few, `--per-county` goes up and the export is re-run; the floor does not come down
+to keep rows.
+
+**Impact if wrong.** Too low is the dangerous direction and it is invisible: the features are
+all present, all finite, and wrong in variance rather than in level. Too high costs rows and
+shows up immediately as thin counties in the Phase 5 aggregation.
+
+`implementation_choice` -- measured, not assumed; re-measure when the window or the sensor list
+changes.
+
+---
+
+## 19. How a target pixel gets chosen: 50 per county, on CDL's grid, unmasked
+
+**Paper.** §3.1 trains on 495,627 field-year samples from Corteva, and augments wheat with
+"2000 pixels ... sampled per mapping year". It does not say how the pixels were drawn, nor how
+the CDL mask and the Landsat grid were reconciled.
+
+**Problem.** Three decisions, one subject.
+
+*How many.* This is set by the validation, not by the model: Phase 5's only available gate
+averages pixel predictions inside a county-year, so `per_county` is that mean's sample size.
+Fifty gives ~54k pixel-years over Iowa 2008-2018 -- 50x the source set, ample for a branch that
+subsamples per batch anyway -- for an export in the hundreds of megabytes. Two hundred would
+halve the gate's standard error for four times the export.
+
+*How drawn.* `sample(numPixels=k)` draws before masking, so a county that is 55% maize returns
+~0.55k points and the count varies county to county, which silently reweights the county
+aggregation toward high-maize counties. `stratifiedSample` with `classValues=[0, 1],
+classPoints=[0, k]` guarantees k crop pixels. The seed carries the year because CDL rotates: a
+2018 maize pixel is 2019 soybean, so a panel fixed across years would be wrong.
+
+*On which grid.* CDL is 30 m Albers, Landsat C2 L2 is 30 m UTM, so the two grids are offset by
+up to half a pixel. `stratifiedSample` takes no projection argument and returns CDL pixel
+centres; `sampleRegions` then reads whichever Landsat pixel contains each.
+
+**Choice.** 50 per county per year, `stratifiedSample`, seeded by `seed + year`, and the target
+imagery is deliberately **not** `updateMask(cropland)`ed the way `gee.build` masks the source.
+The sampling already is the mask. Re-applying it would make Earth Engine resample CDL onto the
+Landsat grid and drop every point whose Landsat centre falls in the neighbouring CDL cell -- a
+non-random thinning at exactly the field edges, where the pixels that differ most from the
+county mean live. The domains stay equivalent either way: only crop locations contribute to
+both, the source masking then averaging, the target selecting then reading.
+
+**Impact if wrong.** The count is a precision knob and shows up in the Phase 5 spread. The
+draw and the mask are correctness: either bug biases *which* pixels the target domain contains,
+and a biased target is a biased alignment, with nothing downstream to reveal it.
+
+`implementation_choice` -- the sub-pixel grid offset is what it is at 30 m; recorded, not
+engineered around.
+
+---
+
+## 20. The county mean is taken over whatever stayed clear that day
+
+**Paper.** §2.2 reduces the crop-masked county to a mean per date. It does not state a minimum
+clear fraction.
+
+**Problem.** The source leg accepts a county-date if *any* pixel in it survives the cloud
+screen. On a mostly-cloudy date the "county mean" is a mean over whatever sliver stayed clear,
+which is not the county mean and is not the same quantity as on a clear date. This is where the
+county table's median of 52 observations comes from, against §2.2's ~20. The target has no
+equivalent: a clouded pixel is simply absent from its series. So the two domains differ in
+their processing and not only in their support -- exactly the kind of difference
+`notes/source_feature_table.md` warns manufactures a false marginal shift, and the adversarial
+branch cannot tell the two apart.
+
+**Choice.** Recorded and not fixed in this session. The fix is a minimum clear fraction on the
+county reduction -- `ee.Reducer.mean().combine(ee.Reducer.count())`, drop dates whose count
+falls below a fraction of the county's masked pixel total -- and it requires re-exporting the
+entire source leg, so it folds into the export that adds the other seven states.
+
+**Impact if wrong.** It is already wrong, by a bounded amount: it perturbs the source `c` and
+low-order coefficients on cloudy dates. It is the prime suspect if `target.compare` shows the
+harmonic means displaced between the domains, and it must be ruled in or out there before any
+displacement is blamed on the aggregation, the mask, or the model.
+
+`known_gap` -- fix with the multi-state re-export; check `compare` before blaming anything else.
