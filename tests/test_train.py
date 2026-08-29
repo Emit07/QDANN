@@ -125,6 +125,16 @@ def test_sample_weights_reach_the_quantile_loss():
     assert float((a - b).abs().mean()) > 1e-3
 
 
+def test_evaluate_seeds_collects_one_run_per_seed():
+    frame = table()
+    seeds = range(3)
+    runs = train.evaluate_seeds(frame, epochs=5, seeds=seeds)
+    assert set(runs) == set(train.evaluate(frame, epochs=5))
+    assert all(len(values) == len(seeds) for values in runs.values())
+    # the seed picks the fold, so the runs are not repeats of each other
+    assert len(set(runs["r2"])) == len(seeds)
+
+
 class _SignDiscriminator:
     """A model whose discriminator reads feature 0's sign, so the metric has an answer."""
 

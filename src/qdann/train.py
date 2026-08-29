@@ -16,6 +16,7 @@ every batch and both arms of the ablation are run and reported.
 
 import argparse
 import logging
+from collections.abc import Iterable
 
 import numpy
 import pandas
@@ -289,6 +290,22 @@ def evaluate(
             model, source_x=train_x, target_x=rest[0], seed=seed
         )
     return ret
+
+
+def evaluate_seeds(
+    table: pandas.DataFrame,
+    epochs: int,
+    seeds: Iterable[int] = range(5),
+    **kwargs,
+) -> dict[str, list[float]]:
+    """`evaluate` once per seed, each metric gathered across the runs.
+
+    The seed draws the held-out counties as well as the initialization, so the spread here
+    is a spread over folds: a single `evaluate` says nearly as much about which counties it
+    drew as about the model, which is why Fig. 16's deltas are read off means.
+    """
+    runs = [evaluate(table, epochs=epochs, seed=seed, **kwargs) for seed in seeds]
+    return {name: [run[name] for run in runs] for name in runs[0]}
 
 
 def report(name: str, scores: dict[str, float]) -> None:
