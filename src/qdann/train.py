@@ -6,9 +6,12 @@ target labels are known.
 
   uv run python -m qdann.train --crop maize --epochs 1000
 
-There is no target domain yet, so this runs with the adversarial branch off (lambda = 0)
-and measures one thing: whether the 27 features predict a held-out county's yield better
-than that year's state mean does.
+  uv run python -m qdann.train --crop maize --epochs 1000 --target
+
+Without `--target` this runs with the adversarial branch off (lambda = 0) and measures one
+thing: whether the 27 features predict a held-out county's yield better than that year's
+state mean does. With it, the unlabelled pixels of `target_<crop>.parquet` are mixed into
+every batch and both arms of the ablation are run and reported.
 """
 
 import argparse
@@ -108,9 +111,14 @@ def split(
 
 
 def standardize(
-    train: pandas.DataFrame, test: pandas.DataFrame, columns: list[str]
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Both frames on the training counties' mean and standard deviation.
+    train: pandas.DataFrame, *frames: pandas.DataFrame, columns: list[str]
+) -> tuple[torch.Tensor, ...]:
+    """Every frame on the training counties' mean and standard deviation.
+
+    The target domain is scaled on the source's statistics rather than its own: pooled
+    scaling would partly align the two domains before G_f ever saw them, and the
+    adversarial branch would get credit for work the scaler had already done.
+    AMBIGUITIES.md #4.
 
     `synth.make_domains` standardizes over the whole source set, which is right there --
     the shift has to survive into the model -- and leaks the holdout here.
@@ -118,8 +126,26 @@ def standardize(
     mean, std = train[columns].mean(), train[columns].std()
     return tuple(
         torch.tensor(((frame[columns] - mean) / std).to_numpy(), dtype=torch.float32)
-        for frame in (train, test)
+        for frame in (train, *frames)
     )
+
+
+def domain_accuracy(
+    model: QDANN, source_x: torch.Tensor, target_x: torch.Tensor, seed: int = 0
+) -> float:
+    """How often G_d names the right domain, over an equal number of rows from each.
+
+    0.5 is the number the adversarial branch is trying to reach: G_f has made the two
+    domains indistinguishable. 1.0 that will not come down is AMBIGUITIES.md #6's symptom
+    and the suspect is BatchNorm, not the loss; 0.5 from the first epoch means the domains
+    were never separable, which is a fault in the feature tables rather than in training.
+    """
+    n = min(len(source_x), len(target_x))
+    rows = torch.randperm(len(target_x), generator=torch.Generator().manual_seed(seed))
+    with torch.no_grad():
+        logit = model.eval()(torch.cat([source_x[:n], target_x[rows[:n]]]))[1]
+    d = torch.cat([torch.ones(n), torch.zeros(n)])
+    return float(((logit > 0).float() == d).float().mean())
 
 
 def per_year_mean(train: pandas.DataFrame, test: pandas.DataFrame) -> torch.Tensor:
@@ -134,7 +160,21 @@ def per_year_mean(train: pandas.DataFrame, test: pandas.DataFrame) -> torch.Tens
     return torch.tensor(predicted.to_numpy(), dtype=torch.float32)
 
 
-def evaluate(table: pandas.DataFrame, epochs: int, seed: int = 0) -> dict[str, float]:
+def evaluate(
+    table: pandas.DataFrame,
+    epochs: int,
+    seed: int = 0,
+    target: pandas.DataFrame | None = None,
+    adversarial: bool = False,
+) -> dict[str, float]:
+    """Fit one arm and score it on the held-out counties.
+
+    Both arms are run with the same `target`: they then share their BatchNorm statistics
+    and differ only in the domain loss and the reversed gradient, which is the difference
+    the ablation is meant to measure. The target pixels come from every county, held-out
+    ones included -- UDA is transductive and the paper maps the region it trains on. Only
+    the *labels* are held out, and the target has none.
+    """
     features = [
         column
         for column in table.columns
@@ -147,7 +187,8 @@ def evaluate(table: pandas.DataFrame, epochs: int, seed: int = 0) -> dict[str, f
         f"{len(train):d} rows / {train['fips'].nunique():d} counties train, "
         f"{len(test):d} rows / {test['fips'].nunique():d} counties held out"
     )
-    train_x, test_x = standardize(train, test, columns=features)
+    frames = (train, test) if target is None else (train, test, target)
+    train_x, test_x, *rest = standardize(*frames, columns=features)
     # the pinball gradient is bounded and Adam normalizes it, so the yield head's output
     # moves about one learning rate per step -- reaching an 11 t/ha intercept from zero
     # would take ~10k steps. The loss is scale-equivariant, so standardizing the label on
@@ -159,17 +200,36 @@ def evaluate(table: pandas.DataFrame, epochs: int, seed: int = 0) -> dict[str, f
     )
 
     model = fit(
-        source_x=train_x, source_y=(train_y - mean) / std, epochs=epochs, seed=seed
+        source_x=train_x,
+        source_y=(train_y - mean) / std,
+        target_x=rest[0] if rest else None,
+        adversarial=adversarial,
+        epochs=epochs,
+        seed=seed,
     )
     with torch.no_grad():
         yhat = model(test_x)[0] * std + mean
     baseline = per_year_mean(train, test)
-    return {
+    scores = {
         "r2": r_squared(y=test_y, yhat=yhat),
         "rmse": rmse(y=test_y, yhat=yhat),
         "per_year_mean_r2": r_squared(y=test_y, yhat=baseline),
         "per_year_mean_rmse": rmse(y=test_y, yhat=baseline),
     }
+    if rest:
+        scores["domain_accuracy"] = domain_accuracy(
+            model, source_x=train_x, target_x=rest[0], seed=seed
+        )
+    return scores
+
+
+def report(name: str, scores: dict[str, float]) -> None:
+    accuracy = scores.get("domain_accuracy")
+    print(
+        f"{name:>14s}  R2 {scores['r2']:6.3f}  RMSE {scores['rmse']:5.3f} t/ha"
+        f"  margin {scores['r2'] - scores['per_year_mean_r2']:+6.3f}"
+        + ("" if accuracy is None else f"  domain acc {accuracy:.3f}")
+    )
 
 
 def main() -> int:
@@ -183,16 +243,35 @@ def main() -> int:
     # wrong it is, so what training needs is steps, and a county table is small
     parser.add_argument("--epochs", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--target",
+        action="store_true",
+        help="mix in the unlabelled pixels and run both arms of the ablation",
+    )
     args = parser.parse_args()
 
     table = weather.read(weather.DATA_DIR / f"source_{args.crop}.parquet")
-    scores = evaluate(table, epochs=args.epochs, seed=args.seed)
-    print(f"\n{'model':>14s}  R2 {scores['r2']:6.3f}  RMSE {scores['rmse']:5.3f} t/ha")
+    target = (
+        weather.read(weather.DATA_DIR / f"target_{args.crop}.parquet")
+        if args.target
+        else None
+    )
+    print()
+    for name, adversarial in (
+        (("source only", False), ("qdann", True)) if args.target else (("model", False),)
+    ):
+        scores = evaluate(
+            table,
+            epochs=args.epochs,
+            seed=args.seed,
+            target=target,
+            adversarial=adversarial,
+        )
+        report(name, scores)
     print(
         f"{'per-year mean':>14s}  R2 {scores['per_year_mean_r2']:6.3f}  "
         f"RMSE {scores['per_year_mean_rmse']:5.3f} t/ha"
     )
-    print(f"{'margin':>14s}  R2 {scores['r2'] - scores['per_year_mean_r2']:+6.3f}")
     return 0
 
 

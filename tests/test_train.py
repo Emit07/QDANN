@@ -79,3 +79,32 @@ def test_the_model_beats_the_per_year_mean_on_a_county_signal():
     scores = train.evaluate(table(), epochs=800)
     assert scores["r2"] > scores["per_year_mean_r2"]
     assert scores["rmse"] < scores["per_year_mean_rmse"]
+
+
+class _SignDiscriminator:
+    """A model whose discriminator reads feature 0's sign, so the metric has an answer."""
+
+    def eval(self):
+        return self
+
+    def __call__(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        return x[:, 0], x[:, 0]
+
+
+def test_domain_accuracy_reads_source_as_the_positive_class():
+    """1.0 on separable domains, 0.5 on identical ones -- and 0.0 if the labels flip."""
+    ones = torch.ones(8, weather.N_FEATURES)
+    model = _SignDiscriminator()
+    assert train.domain_accuracy(model, source_x=ones, target_x=-ones) == 1.0
+    assert train.domain_accuracy(model, source_x=ones * 0, target_x=ones * 0) == 0.5
+
+
+def test_the_target_is_standardized_on_the_training_counties():
+    trained, held = train.split(table())
+    target = held.copy()
+    target[columns()] += 10.0
+    train_x, test_x, target_x = train.standardize(
+        trained, held, target, columns=columns()
+    )
+    assert float(train_x.mean().abs()) < 1e-5
+    assert float((target_x - test_x).mean()) > 5.0
