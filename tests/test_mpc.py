@@ -7,6 +7,7 @@ read on, which pixels are the county's, and what a warp does across UTM zones.
 """
 
 import numpy
+import pandas
 import pyproj
 import rasterio
 import rasterio.warp
@@ -130,3 +131,36 @@ def test_a_valid_zero_survives_the_warp_where_a_zero_fill_would_rewrite_it():
         read = mpc.read(src, mpc.grid(shapely.box(*bounds).buffer(0.005)))
     counts = dict(zip(*numpy.unique(read, return_counts=True)))
     assert counts[0] == counts[5] == 800 and 1 not in counts
+
+
+def test_the_gate_forgives_sliver_dates_and_nothing_else():
+    dates = pandas.date_range("2018-03-01", "2018-11-01", freq="8D").strftime(
+        "%Y-%m-%d"
+    )
+    t = numpy.linspace(0, 1, len(dates))
+    nir = 0.3 + 0.2 * numpy.sin(2 * numpy.pi * t)
+    gee_raw = pandas.DataFrame(
+        {"date": dates, "fips": "19169", "green": 0.08, "nir": nir, "year": 2018}
+    )
+    mpc_raw = gee_raw.assign(n_clear=5000, n_crop=10000)
+    # a sliver the two grids read differently, and a date only MPC kept, from 40 pixels
+    mpc_raw.loc[3, ["nir", "n_clear"]] = [0.9, 100]
+    mpc_raw.loc[len(mpc_raw)] = ["2018-11-05", "19169", 0.08, 0.3, 2018, 40, 10000]
+    sd = pandas.Series(0.3, index=mpc.COEFFICIENTS)
+    # 19 clean county-years, so one mismatch leaves the 95% with identical dates
+    clean = [
+        mpc.compare(gee_raw, gee_raw.assign(n_clear=5000, n_crop=10000), sd, "maize")
+    ] * 19
+
+    row = mpc.compare(gee_raw, mpc_raw, sd, "maize")
+    assert (row["one_sided"], row["one_sided_clear"]) == (1, 40)
+    assert row["rel_median"] == row["rel_p95"] == 0
+    assert row["coef_all"] > mpc.MAX_COEF_SD > row["coef_filtered"]
+    assert mpc.gate(pandas.DataFrame([row, *clean])) == []
+
+    # the same miss on a date with 100 clear pixels is a real disagreement
+    mpc_raw.loc[len(mpc_raw) - 1, "n_clear"] = 100
+    row = mpc.compare(gee_raw, mpc_raw, sd, "maize")
+    assert mpc.gate(pandas.DataFrame([row, *clean])) == [
+        "B: a one-sided date has >= 100 clear pixels"
+    ]

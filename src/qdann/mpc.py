@@ -396,6 +396,65 @@ def fit(out: pathlib.Path, crop: str) -> pandas.DataFrame:
     return gee.fit_table(long=gee.clean(long), crop=crop)
 
 
+# the Phase 1.4 gate against Earth Engine; a date under SLIVER clear is reported, not gated
+SLIVER = 0.05
+MAX_ONE_SIDED_CLEAR = 100
+MIN_IDENTICAL_DATES = 0.95
+MAX_MEDIAN_REL = 0.003
+MAX_P95_REL = 0.01
+MAX_COEF_SD = 0.05
+COEFFICIENTS = ["c", "a1", "b1", "a2", "b2", "a3", "b3"]
+
+
+def compare(
+    gee_raw: pandas.DataFrame, mpc_raw: pandas.DataFrame, sd: pandas.Series, crop: str
+) -> dict:
+    """Tiers B and C1 for one county-year: the per-date means, then Eq. 2 refitted on both
+    sides without the sliver dates, whose handful of pixels the two grids pick differently."""
+    g, m = gee.clean(gee_raw), gee.clean(mpc_raw)
+    clear = mpc_raw.set_index("date")["n_clear"]
+    frac = clear / mpc_raw.set_index("date")["n_crop"]
+    one_sided = set(g["date"]) ^ set(m["date"])
+    both = g.merge(m, on="date", suffixes=("_g", "_m"))
+    rel = (both["gcvi_m"] / both["gcvi_g"] - 1).abs()
+    sliver = both["date"].map(frac) < SLIVER
+    gated = rel[~sliver]
+    keep = set(both["date"][~sliver])
+
+    def worst(g, m):
+        fg, fm = (gee.fit_table(long=x, crop=crop).iloc[0] for x in (g, m))
+        return float(((fg[COEFFICIENTS] - fm[COEFFICIENTS]).abs() / sd).max())
+
+    return {
+        "dates_gee": len(g),
+        "dates_mpc": len(m),
+        "one_sided": len(one_sided),
+        # a date missing from MPC's own rows has no count, so it can't pass as a sliver
+        "one_sided_clear": max((clear.get(d, math.inf) for d in one_sided), default=0),
+        "rel_median": float(gated.median()),
+        "rel_p95": float(gated.quantile(0.95)),
+        "rel_max_sliver": float(rel.max()),
+        "coef_all": worst(g, m),
+        "coef_filtered": worst(g[g["date"].isin(keep)], m[m["date"].isin(keep)]),
+    }
+
+
+def gate(results: pandas.DataFrame) -> list[str]:
+    """The failed criteria of the Tier B/C1 table `compare` rows make, empty if it passes."""
+    failed = []
+    if (results["one_sided"] == 0).mean() < MIN_IDENTICAL_DATES:
+        failed.append("B: date sets identical in too few county-years")
+    if (results["one_sided_clear"] >= MAX_ONE_SIDED_CLEAR).any():
+        failed.append("B: a one-sided date has >= 100 clear pixels")
+    if (results["rel_median"] > MAX_MEDIAN_REL).any():
+        failed.append("B: GCVI median relative gap > 0.3%")
+    if (results["rel_p95"] > MAX_P95_REL).any():
+        failed.append("B: GCVI p95 relative gap > 1%")
+    if (results["coef_filtered"] > MAX_COEF_SD).any():
+        failed.append("C1: sliver-filtered coefficient gap > 0.05 SD")
+    return failed
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     parser = argparse.ArgumentParser(description=__doc__)
@@ -407,7 +466,38 @@ def main() -> int:
     parser.add_argument("--county", help="five-digit county FIPS, e.g. 19169")
     parser.add_argument("--out", type=pathlib.Path, help="default data/mpc/<area>")
     parser.add_argument("--fit", type=pathlib.Path, help="a directory of read years")
+    parser.add_argument(
+        "--gate",
+        type=pathlib.Path,
+        help="a file of 'fips year' lines to check against GEE",
+    )
     args = parser.parse_args()
+
+    if args.gate is not None:
+        reference = gee.DATA_DIR / "reference_gee"
+        sd = pandas.read_parquet(reference / f"source_{args.crop}.parquet")[
+            COEFFICIENTS
+        ].std()
+        rows = []
+        for fips, year in (line.split() for line in args.gate.read_text().splitlines()):
+            mpc_raw = pandas.read_parquet(
+                year_path(
+                    out=gee.DATA_DIR / "mpc" / fips, crop=args.crop, year=int(year)
+                )
+            )
+            gee_raw = pandas.read_csv(
+                reference / "tier_b" / f"gee_{args.crop}_{fips}_{year}.csv",
+                dtype={"fips": str},
+            )
+            rows.append(
+                {"fips": fips, "year": int(year)}
+                | compare(gee_raw, mpc_raw, sd, args.crop)
+            )
+        results = pandas.DataFrame(rows)
+        print(results.to_string(index=False, float_format="{:.4f}".format))
+        failed = gate(results)
+        print("\n" + ("\n".join(failed) if failed else "Tiers B and C1 pass"))
+        return 1 if failed else 0
 
     if args.fit is not None:
         table = fit(out=args.fit, crop=args.crop)
