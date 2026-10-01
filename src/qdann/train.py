@@ -8,21 +8,27 @@ target labels are known.
 
   uv run python -m qdann.train --crop maize --epochs 1000 --target
 
+  uv run python -m qdann.train --crop maize --target --jdluc data/qdann_yields_maize.parquet
+
 Without `--target` this runs with the adversarial branch off (lambda = 0) and measures one
 thing: whether the 27 features predict a held-out county's yield better than that year's
 state mean does. With it, the unlabelled pixels of `target_<crop>.parquet` are mixed into
-every batch and both arms of the ablation are run and reported.
+every batch and both arms of the ablation are run and reported. `--jdluc` also writes the
+QDANN arm's target pixels, averaged per held-out county-year, in the yield schema jdluc's
+`trace.derive_jurisdictional_production_kg` reads.
 """
 
 import argparse
 import logging
+import pathlib
 from collections.abc import Iterable
 
 import numpy
 import pandas
+import pyogrio.raw
 import torch
 
-from qdann import vae, weather
+from qdann import mpc, vae, weather
 from qdann.losses import (
     QUANTILES,
     domain_loss,
@@ -35,6 +41,10 @@ from qdann.model import QDANN
 logger = logging.getLogger(__name__)
 
 HOLDOUT = 0.2
+# ponytail: Iowa only, which is all the MPC read covers; a state table when it grows
+STATE_NAMES = {"19": "Iowa"}
+# jdluc's usda_nass_quickstats crop names
+JDLUC_CROP_NAMES = {"maize": "CORN"}
 
 
 def _show(weights: dict[float, float]) -> str:
@@ -212,6 +222,42 @@ def per_year_mean(train: pandas.DataFrame, test: pandas.DataFrame) -> torch.Tens
     return torch.tensor(predicted.to_numpy(), dtype=torch.float32)
 
 
+def pixel_counties(
+    predicted: numpy.ndarray, target: pandas.DataFrame, test: pandas.DataFrame
+) -> pandas.DataFrame:
+    """The target pixels' predictions (t/ha, in `target`'s row order) averaged per
+    county-year, for the held-out county-years only, next to their NASS label: the model
+    is trained on counties and applied to pixels, and this is where the two meet."""
+    keys = list(weather.KEY_COLUMNS)
+    return (
+        target[keys]
+        .assign(predicted=predicted)
+        .groupby(keys, as_index=False)
+        .agg(predicted=("predicted", "mean"), n_pixels=("predicted", "size"))
+        .merge(test[[*keys, weather.LABEL_COLUMN]], on=keys)
+    )
+
+
+def jdluc_yields(
+    counties: pandas.DataFrame, crop: str, county_names: dict[str, str]
+) -> pandas.DataFrame:
+    """`pixel_counties` in jdluc's `usda_nass_quickstats` schema, at a tier of its own."""
+    return pandas.DataFrame(
+        {
+            "admin_level": "DISTRICT",
+            "admin_id": "USA" + counties["fips"],
+            "jurisdiction_name": [
+                f"{STATE_NAMES[f[:2]]} | {county_names[f]}" for f in counties["fips"]
+            ],
+            "crop_name": JDLUC_CROP_NAMES[crop],
+            "year": counties["year"],
+            # both repos convert bushels at 56 lb, so t/ha to kg/ha is all that's left
+            "yield_kg_per_ha": counties["predicted"] * 1000,
+            "yield_tier": "QDANN",
+        }
+    ).set_index(["admin_level", "admin_id", "jurisdiction_name", "crop_name", "year"])
+
+
 def evaluate(
     table: pandas.DataFrame,
     epochs: int,
@@ -221,6 +267,7 @@ def evaluate(
     quantile: bool = True,
     vae_filter: bool = False,
     crop: str | None = None,
+    counties: list[pandas.DataFrame] | None = None,
 ) -> dict[str, float]:
     """Fit one arm and score it on the held-out counties.
 
@@ -235,6 +282,9 @@ def evaluate(
     It needs the target domain to train on and the crop to pick a threshold.
 
     `quantile=False` is Fig. 16's remaining arm; see `fit`.
+
+    With a target, the pixels are also scored as county means (`pixel_counties`), which
+    is appended to `counties` when one is passed.
     """
     features = feature_columns(table)
     train, test = split(table, seed=seed)
@@ -257,12 +307,16 @@ def evaluate(
 
     sample_weights = None
     if vae_filter:
-        assert rest and crop is not None, "the VAE filter needs a target domain and a crop"
+        assert rest and crop is not None, (
+            "the VAE filter needs a target domain and a crop"
+        )
         errors = vae.reconstruction_error(
             vae.fit(rest[0], epochs=epochs, seed=seed), train_x
         )
         keep = errors <= vae.filter_threshold(errors, crop)
-        logger.info(f"VAE filter keeps {int(keep.sum()):d} of {len(keep):d} source rows")
+        logger.info(
+            f"VAE filter keeps {int(keep.sum()):d} of {len(keep):d} source rows"
+        )
         # `fit` shuffles the tensors it is handed, so filtering all three together here
         # keeps the weights aligned with the rows they belong to
         train_x, train_y_std = train_x[keep], train_y_std[keep]
@@ -289,6 +343,16 @@ def evaluate(
         ret["domain_accuracy"] = domain_accuracy(
             model, source_x=train_x, target_x=rest[0], seed=seed
         )
+        with torch.no_grad():
+            predicted = (model(rest[0])[0] * std + mean).numpy()
+        pixels = pixel_counties(predicted, target=target, test=test)
+        ret["pixel_county_rmse"] = rmse(
+            y=torch.tensor(pixels[weather.LABEL_COLUMN].to_numpy()),
+            yhat=torch.tensor(pixels["predicted"].to_numpy()),
+        )
+        ret["pixel_county_n"] = float(len(pixels))
+        if counties is not None:
+            counties.append(pixels)
     return ret
 
 
@@ -315,6 +379,12 @@ def report(name: str, scores: dict[str, float]) -> None:
         f"  NRMSE {scores['nrmse']:5.3f}"
         f"  margin {scores['r2'] - scores['per_year_mean_r2']:+6.3f}"
         + ("" if accuracy is None else f"  domain acc {accuracy:.3f}")
+        + (
+            f"  pixel RMSE {scores['pixel_county_rmse']:5.3f} t/ha"
+            f" (n={scores['pixel_county_n']:.0f})"
+            if "pixel_county_rmse" in scores
+            else ""
+        )
     )
 
 
@@ -334,7 +404,14 @@ def main() -> int:
         action="store_true",
         help="mix in the unlabelled pixels and run both arms of the ablation",
     )
+    parser.add_argument(
+        "--jdluc",
+        type=pathlib.Path,
+        help="write the QDANN arm's held-out county yields here, in jdluc's schema",
+    )
     args = parser.parse_args()
+    if args.jdluc and not args.target:
+        parser.error("--jdluc needs --target")
 
     table = weather.read(weather.DATA_DIR / f"source_{args.crop}.parquet")
     target = (
@@ -342,9 +419,12 @@ def main() -> int:
         if args.target
         else None
     )
+    counties: list[pandas.DataFrame] = []
     print()
     for name, adversarial in (
-        (("source only", False), ("qdann", True)) if args.target else (("model", False),)
+        (("source only", False), ("qdann", True))
+        if args.target
+        else (("model", False),)
     ):
         scores = evaluate(
             table,
@@ -352,6 +432,7 @@ def main() -> int:
             seed=args.seed,
             target=target,
             adversarial=adversarial,
+            counties=counties,
         )
         report(name, scores)
     print(
@@ -359,6 +440,17 @@ def main() -> int:
         f"RMSE {scores['per_year_mean_rmse']:5.3f} t/ha  "
         f"NRMSE {scores['per_year_mean_nrmse']:5.3f}"
     )
+    if args.jdluc:
+        # the last arm run is QDANN's
+        fips, names = pyogrio.raw.read(
+            mpc.TIGER_PATH, columns=["GEOID", "NAME"], read_geometry=False
+        )[3]
+        jdluc_yields(
+            counties[-1],
+            crop=args.crop,
+            county_names=dict(zip(fips, names, strict=True)),
+        ).to_parquet(args.jdluc)
+        print(f"{len(counties[-1]):d} county yields -> {args.jdluc}")
     return 0
 
 

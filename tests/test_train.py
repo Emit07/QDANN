@@ -104,6 +104,8 @@ def test_the_vae_filter_drops_source_rows_and_still_scores():
         "per_year_mean_rmse",
         "per_year_mean_nrmse",
         "domain_accuracy",
+        "pixel_county_rmse",
+        "pixel_county_n",
     }
 
 
@@ -162,3 +164,39 @@ def test_the_target_is_standardized_on_the_training_counties():
     )
     assert float(train_x.mean().abs()) < 1e-5
     assert float((target_x - test_x).mean()) > 5.0
+
+
+def test_pixels_become_held_out_county_yields_in_jdluc_schema():
+    target = pandas.DataFrame(
+        {
+            "fips": ["19001", "19001", "19003", "19005"],
+            "year": 2018,
+            "pid": [0, 1, 0, 0],
+        }
+    )
+    test = pandas.DataFrame(
+        {"fips": ["19001", "19003"], "year": 2018, "yield_t_ha": [11.0, 12.0]}
+    )
+    counties = train.pixel_counties(numpy.array([10.0, 12.0, 13.0, 99.0]), target, test)
+    # 19005 has pixels but no held-out label: it was trained on
+    assert counties.to_dict("list") == {
+        "fips": ["19001", "19003"],
+        "year": [2018, 2018],
+        "predicted": [11.0, 13.0],
+        "n_pixels": [2, 1],
+        "yield_t_ha": [11.0, 12.0],
+    }
+    yields = train.jdluc_yields(
+        counties, crop="maize", county_names={"19001": "Adair", "19003": "Adams"}
+    )
+    # jdluc's usda_nass_quickstats.DATASET.idx_column_names
+    assert yields.index.names == [
+        "admin_level",
+        "admin_id",
+        "jurisdiction_name",
+        "crop_name",
+        "year",
+    ]
+    assert yields.index[0] == ("DISTRICT", "USA19001", "Iowa | Adair", "CORN", 2018)
+    assert yields["yield_kg_per_ha"].tolist() == [11000.0, 13000.0]
+    assert set(yields["yield_tier"]) == {"QDANN"}
