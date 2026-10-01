@@ -164,3 +164,17 @@ def test_the_gate_forgives_sliver_dates_and_nothing_else():
     assert mpc.gate(pandas.DataFrame([row, *clean])) == [
         "B: a one-sided date has >= 100 clear pixels"
     ]
+
+
+def test_a_target_point_reads_the_landsat_pixel_containing_it():
+    values = numpy.arange(40 * 40, dtype=numpy.uint16).reshape(40, 40)
+    crs = rasterio.CRS.from_epsg(32615)
+    transform = Affine(30, 0, 400005, 0, -30, 4650015)
+    rows, cols = numpy.array([0, 7, 7, 39]), numpy.array([0, 12, 13, 39])
+    # 14 m off each centre toward a corner, where a resampled read would pick a neighbour
+    x, y = 400005 + 30 * (cols + 0.5), 4650015 - 30 * (rows + 0.5)
+    x, y = [*(x + [14, -14, 14, -14]), 390000], [*(y + [14, 14, -14, -14]), 4650000]
+    lon, lat = rasterio.warp.transform(crs, "EPSG:4326", x, y)
+    with _raster(values, crs, transform) as src:
+        read = mpc.sample(src, numpy.array(lon), numpy.array(lat))
+    assert read.tolist() == [*values[rows, cols].tolist(), 65535]

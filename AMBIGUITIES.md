@@ -443,7 +443,14 @@ classPoints=[0, k]` guarantees k crop pixels. The seed carries the year because 
 
 *On which grid.* CDL is 30 m Albers, Landsat C2 L2 is 30 m UTM, so the two grids are offset by
 up to half a pixel. `stratifiedSample` takes no projection argument and returns CDL pixel
-centres; `sampleRegions` then reads whichever Landsat pixel contains each.
+centres. `sampleRegions` does **not** then read the Landsat pixel containing each, as this
+entry first said: the date mosaic's default projection is EPSG:4326 at 1°, so Earth Engine
+resamples Landsat onto a 4326 grid at `scale=30` first. Measured at the 50 Story 2018 points,
+its values equal the containing native pixel's on only 66% of point-dates, and on one
+single-scene L8 date 30 of 50 matched the containing pixel and the other 20 a neighbour.
+No Earth Engine target GCVI table was ever built, so nothing depends on that path;
+`mpc.sample` reads the containing native pixel by definition, and that is the target pixel
+from here on.
 
 **Choice.** 50 per county per year, `stratifiedSample`, seeded by `seed + year`, and the target
 imagery is deliberately **not** `updateMask(cropland)`ed the way `gee.build` masks the source.
@@ -457,8 +464,9 @@ both, the source masking then averaging, the target selecting then reading.
 draw and the mask are correctness: either bug biases *which* pixels the target domain contains,
 and a biased target is a biased alignment, with nothing downstream to reveal it.
 
-`implementation_choice` -- the sub-pixel grid offset is what it is at 30 m; recorded, not
-engineered around.
+`implementation_choice` -- the sub-pixel CDL/Landsat offset is what it is at 30 m; recorded,
+not engineered around. Which Landsat pixel is read is not left to a resampler: the one
+containing the point.
 
 ---
 

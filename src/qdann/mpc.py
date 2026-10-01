@@ -6,11 +6,14 @@ fitting rules are `gee`'s, reused rather than restated.
 
   uv run python -m qdann.mpc --crop maize --years 2018 --county 19169   # one county
   uv run python -m qdann.mpc --crop maize --years 2008-2018 --state 19  # days of reads
+  uv run python -m qdann.mpc --crop maize --years 2008-2018 --state 19 --target
   uv run python -m qdann.mpc --crop maize --fit data/mpc/19
 
 A read writes one long parquet per year under data/mpc/<county or state>/ and skips the
-years already there, so an interrupted run resumes. --fit fits Eq. 2 to them. Nothing here
-writes the GEE tables (gcvi_maize.parquet and friends): every output is named *_mpc_*.
+years already there, so an interrupted run resumes. --target also reads the stored target
+pixels from the same scenes, so the one download serves both legs. --fit fits Eq. 2 to
+them. Nothing here writes the GEE tables (gcvi_maize.parquet and friends): every output
+is named *_mpc_*.
 
 Two differences from `gee` are deliberate. Earth Engine reduces on the date mosaic's
 default EPSG:4326 grid, resampling both Landsat and CDL; here each county is read on its
@@ -37,13 +40,14 @@ import pyproj
 import pystac_client
 import rasterio
 import rasterio.features
+import rasterio.warp
 import shapely
 import shapely.ops
 from rasterio.enums import Resampling
 from rasterio.transform import Affine
 from rasterio.vrt import WarpedVRT
 
-from qdann import gee
+from qdann import gee, target
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +73,8 @@ GDAL_ENV = {
     "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
     "GDAL_HTTP_MAX_RETRY": "5",
     "GDAL_HTTP_RETRY_DELAY": "2",
+    # GDAL waits forever by default: a socket dropped by a network change hung a read for hours
+    "GDAL_HTTP_TIMEOUT": "60",
     # neighbouring counties' boxes overlap, so the same COG blocks are asked for twice
     "GDAL_CACHEMAX": 512,
 }
@@ -292,6 +298,24 @@ def mosaic(
     return green, nir
 
 
+def sample(
+    src: rasterio.DatasetReader, lon: numpy.ndarray, lat: numpy.ndarray
+) -> numpy.ndarray:
+    """Band 1 at the pixel containing each point, `fill(src)` off the raster.
+
+    The pixel Landsat measured, never a resampled neighbour: Earth Engine's sampleRegions
+    read one about 40% of the time (AMBIGUITIES.md #19). A point on a pixel edge is the
+    pixel to its east or south, as `rowcol` floors.
+    """
+    xs, ys = rasterio.warp.transform("EPSG:4326", src.crs, lon, lat)
+    rows, cols = rasterio.transform.rowcol(src.transform, xs, ys)
+    ret = numpy.full(len(lon), fill(src), dtype=src.dtypes[0])
+    for i, (row, col) in enumerate(zip(rows, cols)):
+        if 0 <= row < src.height and 0 <= col < src.width:
+            ret[i] = src.read(1, window=((row, row + 1), (col, col + 1)))[0, 0]
+    return ret
+
+
 def opened(href: str) -> rasterio.DatasetReader:
     return rasterio.open(planetary_computer.sign(href))
 
@@ -318,9 +342,11 @@ def date_means(
     counties: dict[str, shapely.Geometry],
     grids: dict[str, Grid],
     crops: dict[str, numpy.ndarray],
-) -> list[dict]:
-    """One row per county the date's scenes touch. Each scene's assets are opened once
-    and read per county, so only one county-date is ever held in memory."""
+    points: pandas.DataFrame,
+) -> tuple[list[dict], pandas.DataFrame]:
+    """One row per county the date's scenes touch, and one per clear target point. Each
+    scene's assets are opened once and read per county, so only one county-date is ever
+    held in memory, and the points reuse the blocks the counties just fetched."""
     footprints = [shapely.geometry.shape(item.geometry) for item in items]
     rows = []
     with contextlib.ExitStack() as stack:
@@ -356,13 +382,28 @@ def date_means(
                     "n_crop": int(crop.sum()),
                 }
             )
-    return rows
+        # no CDL mask: the points were drawn on that year's crop pixels (AMBIGUITIES.md #19)
+        green, nir = mosaic(
+            reflectance(*(sample(src, points["lon"], points["lat"]) for src in bands))
+            for bands in sources
+        )
+    clear = ~numpy.isnan(green)
+    return rows, points.loc[clear, ["fips", "pid"]].assign(
+        date=date(items[0]), green=green[clear], nir=nir[clear]
+    )
 
 
 def county_means(
-    crop: str, year: int, counties: dict[str, shapely.Geometry]
-) -> tuple[pandas.DataFrame, list[str]]:
-    """The long table (fips, year, date, green, nir, n_clear, n_crop) and the scene ids."""
+    crop: str,
+    year: int,
+    counties: dict[str, shapely.Geometry],
+    points: pandas.DataFrame | None = None,
+) -> tuple[pandas.DataFrame, list[str], pandas.DataFrame]:
+    """The long table (fips, year, date, green, nir, n_clear, n_crop), the scene ids, and
+    the target's long table (fips, pid, year, date, green, nir) at `points` (pid, fips,
+    lon, lat), read from the same scenes in the same pass."""
+    if points is None:
+        points = pandas.DataFrame(columns=["fips", "pid", "lon", "lat"])
     region = shapely.union_all(list(counties.values()))
     items = scenes(crop=crop, year=year, region=region)
     tiles = cdl_tiles(year=year, region=region)
@@ -372,20 +413,41 @@ def county_means(
         for fips, polygon in counties.items()
     }
     logger.info("%d: %d scenes, %d CDL tiles", year, len(items), len(tiles))
-    rows = []
+    rows, pixels = [], []
     for day, group in itertools.groupby(items, key=date):
         group = list(group)
-        rows += retry(lambda group=group: date_means(group, counties, grids, crops))
+        means, values = retry(
+            lambda group=group: date_means(group, counties, grids, crops, points)
+        )
+        rows += means
+        pixels.append(values)
         logger.info("%d: %s done (%d scenes)", year, day, len(group))
     long = pandas.DataFrame(
         rows, columns=["fips", "date", "green", "nir", "n_clear", "n_crop"]
     )
     long.insert(1, "year", year)
-    return long, [item.id for item in items]
+    pixels = pandas.concat(pixels, ignore_index=True) if pixels else points.iloc[:0]
+    pixels.insert(2, "year", year)
+    return long, [item.id for item in items], pixels
 
 
 def year_path(out: pathlib.Path, crop: str, year: int) -> pathlib.Path:
     return out / f"gcvi_mpc_{crop}_{year}.parquet"
+
+
+def target_path(out: pathlib.Path, crop: str, year: int) -> pathlib.Path:
+    return out / f"target_mpc_{crop}_{year}.parquet"
+
+
+def points(crop: str, year: int, fips: typing.Iterable[str]) -> pandas.DataFrame:
+    """The target pixels Earth Engine drew (AMBIGUITIES.md #19), stored with their weather,
+    so every pixel read here still finds its weather row in `target.join`."""
+    stored = pandas.read_parquet(
+        gee.DATA_DIR / f"gridmet_target_{crop}.parquet",
+        columns=["fips", "pid", "year", "lon", "lat"],
+    )
+    stored = stored[(stored["year"] == year) & stored["fips"].isin(list(fips))]
+    return stored.drop(columns="year").reset_index(drop=True)
 
 
 def fit(out: pathlib.Path, crop: str) -> pandas.DataFrame:
@@ -394,6 +456,22 @@ def fit(out: pathlib.Path, crop: str) -> pandas.DataFrame:
     paths = sorted(out.glob(f"gcvi_mpc_{crop}_[0-9][0-9][0-9][0-9].parquet"))
     long = pandas.concat([pandas.read_parquet(path) for path in paths])
     return gee.fit_table(long=gee.clean(long), crop=crop)
+
+
+def fit_target(out: pathlib.Path, crop: str) -> pandas.DataFrame:
+    """Eq. 2 per target pixel-year, under the target's observation floor."""
+    paths = sorted(out.glob(f"target_mpc_{crop}_[0-9][0-9][0-9][0-9].parquet"))
+    long = gee.clean(
+        pandas.concat([pandas.read_parquet(path) for path in paths]),
+        keys=target.KEY_COLUMNS,
+    )
+    print(target.retained(long).to_string(index=False))
+    return gee.fit_table(
+        long=long,
+        crop=crop,
+        keys=target.KEY_COLUMNS,
+        min_observations=target.MIN_OBSERVATIONS,
+    )
 
 
 # the Phase 1.4 gate against Earth Engine; a date under SLIVER clear is reported, not gated
@@ -471,6 +549,11 @@ def main() -> int:
         type=pathlib.Path,
         help="a file of 'fips year' lines to check against GEE",
     )
+    parser.add_argument(
+        "--target",
+        action="store_true",
+        help="also read the stored target pixels, in the same pass",
+    )
     args = parser.parse_args()
 
     if args.gate is not None:
@@ -505,6 +588,11 @@ def main() -> int:
         table.to_parquet(path, index=False)
         print(table["n_observations"].describe().to_string())
         print(f"\n{len(table):d} county-years -> {path}")
+        if any(args.fit.glob(f"target_mpc_{args.crop}_*.parquet")):
+            table = fit_target(out=args.fit, crop=args.crop)
+            path = args.fit / f"gcvi_target_mpc_{args.crop}.parquet"
+            table.to_parquet(path, index=False)
+            print(f"\n{len(table):d} pixel-years -> {path}")
         return 0
 
     state = args.county[:2] if args.county else args.state
@@ -514,12 +602,22 @@ def main() -> int:
     with rasterio.Env(**GDAL_ENV):
         for year in args.years:
             path = year_path(out=out, crop=args.crop, year=year)
-            if path.exists():
+            pixels_path = target_path(out=out, crop=args.crop, year=year)
+            if path.exists() and (pixels_path.exists() or not args.target):
                 logger.info("%d: %s exists, skipping", year, path)
                 continue
             started = time.monotonic()
-            long, ids = county_means(crop=args.crop, year=year, counties=counties)
+            long, ids, pixels = county_means(
+                crop=args.crop,
+                year=year,
+                counties=counties,
+                points=points(crop=args.crop, year=year, fips=counties)
+                if args.target
+                else None,
+            )
             (out / f"scenes_mpc_{args.crop}_{year}.txt").write_text("\n".join(ids))
+            if args.target:
+                pixels.to_parquet(pixels_path, index=False)
             # written last, so a year only counts as done once all of it is on disk
             long.to_parquet(path, index=False)
             logger.info(
