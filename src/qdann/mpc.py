@@ -39,6 +39,7 @@ import pyogrio.raw
 import pyproj
 import pystac_client
 import rasterio
+import rasterio.cache
 import rasterio.features
 import rasterio.warp
 import shapely
@@ -124,6 +125,8 @@ def retry[T](fn: typing.Callable[[], T], attempts: int = RETRIES) -> T:
                 raise
             delay = 10 * 2**attempt
             logger.warning("%s; retrying in %d s", error, delay)
+            # a truncated response stays in GDAL's HTTP cache, and every retry would reread it
+            rasterio.cache.invalidate_all()
             time.sleep(delay)
     raise AssertionError("unreachable")
 
