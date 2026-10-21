@@ -20,3 +20,6 @@ data/
 
 # Credentials (Quick Stats API key, Earth Engine project)
 .env
+
+# SLURM job output
+logs/

@@ -453,19 +453,29 @@ def points(crop: str, year: int, fips: typing.Iterable[str]) -> pandas.DataFrame
     return stored.drop(columns="year").reset_index(drop=True)
 
 
+def read_years(
+    out: pathlib.Path, prefix: str, crop: str, keys: typing.Iterable[str]
+) -> pandas.DataFrame:
+    """Every year file under `out` at any depth, so a run split one county per job
+    (--out data/mpc/19/<fips>, see sherlock.sbatch) fits as one. A county read into two
+    of those directories would enter its fit twice, so a repeated row is an error."""
+    paths = sorted(out.rglob(f"{prefix}_{crop}_[0-9][0-9][0-9][0-9].parquet"))
+    long = pandas.concat([pandas.read_parquet(path) for path in paths])
+    assert not long.duplicated([*keys, "date"]).any(), f"a {prefix} row repeats under {out}"
+    return long
+
+
 def fit(out: pathlib.Path, crop: str) -> pandas.DataFrame:
     """Fit Eq. 2 to every year read into `out`; the long tables are kept, so the counts
     stay available for #20's rule after `gee.clean` drops them."""
-    paths = sorted(out.glob(f"gcvi_mpc_{crop}_[0-9][0-9][0-9][0-9].parquet"))
-    long = pandas.concat([pandas.read_parquet(path) for path in paths])
+    long = read_years(out=out, prefix="gcvi_mpc", crop=crop, keys=gee.KEY_COLUMNS)
     return gee.fit_table(long=gee.clean(long), crop=crop)
 
 
 def fit_target(out: pathlib.Path, crop: str) -> pandas.DataFrame:
     """Eq. 2 per target pixel-year, under the target's observation floor."""
-    paths = sorted(out.glob(f"target_mpc_{crop}_[0-9][0-9][0-9][0-9].parquet"))
     long = gee.clean(
-        pandas.concat([pandas.read_parquet(path) for path in paths]),
+        read_years(out=out, prefix="target_mpc", crop=crop, keys=target.KEY_COLUMNS),
         keys=target.KEY_COLUMNS,
     )
     print(target.retained(long).to_string(index=False))
@@ -591,7 +601,7 @@ def main() -> int:
         table.to_parquet(path, index=False)
         print(table["n_observations"].describe().to_string())
         print(f"\n{len(table):d} county-years -> {path}")
-        if any(args.fit.glob(f"target_mpc_{args.crop}_*.parquet")):
+        if any(args.fit.rglob(f"target_mpc_{args.crop}_*.parquet")):
             table = fit_target(out=args.fit, crop=args.crop)
             path = args.fit / f"gcvi_target_mpc_{args.crop}.parquet"
             table.to_parquet(path, index=False)

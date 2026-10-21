@@ -9,6 +9,7 @@ read on, which pixels are the county's, and what a warp does across UTM zones.
 import numpy
 import pandas
 import pyproj
+import pytest
 import rasterio
 import rasterio.warp
 import shapely
@@ -178,3 +179,20 @@ def test_a_target_point_reads_the_landsat_pixel_containing_it():
     with _raster(values, crs, transform) as src:
         read = mpc.sample(src, numpy.array(lon), numpy.array(lat))
     assert read.tolist() == [*values[rows, cols].tolist(), 65535]
+
+
+def test_read_years_collects_county_dirs_and_rejects_repeats(tmp_path):
+    row = {"fips": "19001", "year": 2018, "date": "2018-06-01", "green": 0.1, "nir": 0.3}
+    for fips in ("19001", "19003"):
+        (tmp_path / fips).mkdir()
+        pandas.DataFrame([row | {"fips": fips}]).to_parquet(
+            tmp_path / fips / "gcvi_mpc_maize_2018.parquet"
+        )
+    long = mpc.read_years(tmp_path, prefix="gcvi_mpc", crop="maize", keys=gee.KEY_COLUMNS)
+    assert sorted(long["fips"]) == ["19001", "19003"]
+
+    # the same county read again in a second directory
+    (tmp_path / "again").mkdir()
+    pandas.DataFrame([row]).to_parquet(tmp_path / "again" / "gcvi_mpc_maize_2018.parquet")
+    with pytest.raises(AssertionError, match="repeats"):
+        mpc.read_years(tmp_path, prefix="gcvi_mpc", crop="maize", keys=gee.KEY_COLUMNS)
