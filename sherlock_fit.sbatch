@@ -15,4 +15,4 @@
 
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
-exec .venv/bin/python -m qdann.mpc --crop maize --fit data/mpc/19
+exec apptainer exec py.sif .venv/bin/python -m qdann.mpc --crop maize --fit data/mpc/19

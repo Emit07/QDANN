@@ -4,8 +4,11 @@
 # most the year in flight: resubmit the same array and only the missing work reruns.
 #
 # Once, on a login node (compute jobs must not download or sync, 99 at once would race):
-#   uv sync --frozen
-#   uv run python -c "from qdann import mpc; print(len(mpc.state_counties('19')))"  # TIGER
+# Sherlock's glibc (2.17) is older than the torch/pyproj/rasterio wheels need (2.28), so the
+# venv is built and run inside a Debian container that has uv and Python 3.14:
+#   apptainer pull py.sif docker://ghcr.io/astral-sh/uv:python3.14-bookworm-slim
+#   apptainer exec py.sif uv sync --frozen
+#   apptainer exec py.sif uv run --no-sync python -c "from qdann import mpc; print(len(mpc.state_counties('19')))"  # TIGER
 #   scp data/gridmet_target_maize.parquet from the laptop into data/   # --target's points
 #
 #   mkdir -p logs && jid=$(sbatch --parsable sherlock.sbatch)
@@ -21,7 +24,7 @@
 
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
-python=.venv/bin/python
+python="apptainer exec py.sif .venv/bin/python"
 fips=$($python -c "from qdann import mpc; print(sorted(mpc.state_counties('19'))[$SLURM_ARRAY_TASK_ID])")
 exec $python -m qdann.mpc --crop maize --years 2008-2018 --county "$fips" --target \
     --out "data/mpc/19/$fips"
