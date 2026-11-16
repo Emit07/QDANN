@@ -8,8 +8,8 @@
 #   uv run python -c "from qdann import mpc; print(len(mpc.state_counties('19')))"  # TIGER
 #   scp data/gridmet_target_maize.parquet from the laptop into data/   # --target's points
 #
-#   mkdir -p logs && sbatch sherlock.sbatch                 # then, when every task is done:
-#   uv run python -m qdann.mpc --crop maize --fit data/mpc/19
+#   mkdir -p logs && jid=$(sbatch --parsable sherlock.sbatch)
+#   sbatch --dependency=afterok:$jid sherlock_fit.sbatch   # the fit, once every task succeeds
 #
 #SBATCH --job-name=qdann-mpc
 #SBATCH --partition=normal,owners
