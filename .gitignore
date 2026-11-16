@@ -23,3 +23,4 @@ data/
 
 # SLURM job output
 logs/
+py.sif
