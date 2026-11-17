@@ -6,7 +6,7 @@
 # Once, on a login node (compute jobs must not download or sync, 99 at once would race):
 # Sherlock's glibc (2.17) is older than the torch/pyproj/rasterio wheels need (2.28), so the
 # venv is built and run inside a Debian container that has uv and Python 3.14:
-#   apptainer pull py.sif docker://ghcr.io/astral-sh/uv:python3.14-bookworm-slim
+#   apptainer pull py.sif docker://ghcr.io/astral-sh/uv:python3.14-bookworm
 #   apptainer exec py.sif uv sync --frozen
 #   apptainer exec py.sif uv run --no-sync python -c "from qdann import mpc; print(len(mpc.state_counties('19')))"  # TIGER
 #   scp data/gridmet_target_maize.parquet from the laptop into data/   # --target's points
