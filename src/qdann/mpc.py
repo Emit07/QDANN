@@ -37,6 +37,7 @@ import pandas
 import planetary_computer
 import pyogrio.raw
 import pyproj
+import pystac.errors
 import pystac_client
 import rasterio
 import rasterio.cache
@@ -120,7 +121,7 @@ def retry[T](fn: typing.Callable[[], T], attempts: int = RETRIES) -> T:
     for attempt in range(attempts):
         try:
             return fn()
-        except (OSError, pystac_client.exceptions.APIError) as error:
+        except (OSError, pystac_client.exceptions.APIError, pystac.errors.STACError) as error:
             if attempt == attempts - 1:
                 raise
             delay = 10 * 2**attempt
