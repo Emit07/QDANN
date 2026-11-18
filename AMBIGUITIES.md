@@ -484,17 +484,22 @@ their processing and not only in their support -- exactly the kind of difference
 `notes/source_feature_table.md` warns manufactures a false marginal shift, and the adversarial
 branch cannot tell the two apart.
 
-**Choice.** Recorded and not fixed in this session. The fix is a minimum clear fraction on the
-county reduction -- `ee.Reducer.mean().combine(ee.Reducer.count())`, drop dates whose count
-falls below a fraction of the county's masked pixel total -- and it requires re-exporting the
-entire source leg, so it folds into the export that adds the other seven states.
+**Choice.** Fixed on the MPC leg, whose rows carry `n_clear` and `n_crop`: `mpc.fit` drops a
+county-date whose clear count is under `mpc.SLIVER` (5%) of the county's crop pixels. The GEE
+tables (`gcvi_maize.parquet`, `source_maize.parquet`) predate the fix and still carry the slivers;
+Earth Engine never returned the counts, so they cannot be filtered after the fact.
 
-**Impact if wrong.** It is already wrong, by a bounded amount: it perturbs the source `c` and
-low-order coefficients on cloudy dates. It is the prime suspect if `target.compare` shows the
-harmonic means displaced between the domains, and it must be ruled in or out there before any
-displacement is blamed on the aggregation, the mask, or the model.
+Measured 2026-11-18 on the 1,089 Iowa county-years: the median observation count fell from 52 to
+40, still above §2.2's ~20. Against the unfiltered fit, the median coefficient moved 0.16-0.42 SD
+and the 95th percentile 0.70-1.71 SD, so the slivers were not a rounding error. The Tier B/C1 gate
+now counts a one-sided date only if `fit` would keep it. All 44 checked county-years pass. Every
+date that failed the old identical-dates check held 0-2 clear pixels.
 
-`known_gap` -- fix with the multi-state re-export; check `compare` before blaming anything else.
+**Impact if wrong.** 5% is a judgement call. A higher floor discards more cloudy-season shape. A
+lower one readmits slivers. It is still the first thing to check if `target.compare` shows the
+harmonic means displaced between the domains.
+
+`implementation_choice` -- fixed for MPC; the GEE leg keeps the gap, so train on the MPC tables.
 
 ---
 

@@ -154,14 +154,15 @@ def test_the_gate_forgives_sliver_dates_and_nothing_else():
     ] * 19
 
     row = mpc.compare(gee_raw, mpc_raw, sd, "maize")
-    assert (row["one_sided"], row["one_sided_clear"]) == (1, 40)
+    assert (row["one_sided"], row["one_sided_clear"]) == (0, 0)
     assert row["rel_median"] == row["rel_p95"] == 0
     assert row["coef_all"] > mpc.MAX_COEF_SD > row["coef_filtered"]
     assert mpc.gate(pandas.DataFrame([row, *clean])) == []
 
-    # the same miss on a date with 100 clear pixels is a real disagreement
-    mpc_raw.loc[len(mpc_raw) - 1, "n_clear"] = 100
+    # the same miss on a date clear enough for `fit` to keep is a real disagreement
+    mpc_raw.loc[len(mpc_raw) - 1, "n_clear"] = 600
     row = mpc.compare(gee_raw, mpc_raw, sd, "maize")
+    assert (row["one_sided"], row["one_sided_clear"]) == (1, 600)
     assert mpc.gate(pandas.DataFrame([row, *clean])) == [
         "B: a one-sided date has >= 100 clear pixels"
     ]
@@ -196,3 +197,31 @@ def test_read_years_collects_county_dirs_and_rejects_repeats(tmp_path):
     pandas.DataFrame([row]).to_parquet(tmp_path / "again" / "gcvi_mpc_maize_2018.parquet")
     with pytest.raises(AssertionError, match="repeats"):
         mpc.read_years(tmp_path, prefix="gcvi_mpc", crop="maize", keys=gee.KEY_COLUMNS)
+
+
+def test_fit_drops_the_sliver_dates(tmp_path):
+    dates = pandas.date_range("2018-03-01", "2018-11-01", freq="8D").strftime(
+        "%Y-%m-%d"
+    )
+    t = numpy.linspace(0, 1, len(dates))
+    long = pandas.DataFrame(
+        {
+            "fips": "19169",
+            "year": 2018,
+            "date": dates,
+            "green": 0.08,
+            "nir": 0.3 + 0.2 * numpy.sin(2 * numpy.pi * t),
+            "n_clear": 5000,
+            "n_crop": 10000,
+        }
+    )
+    (tmp_path / "19169").mkdir()
+    long.to_parquet(tmp_path / "19169" / "gcvi_mpc_maize_2018.parquet")
+    expected = mpc.fit(tmp_path, crop="maize")
+
+    # a 40-pixel mean far off the curve, which #20 says is not the county's
+    sliver = long.iloc[[3]].assign(date="2018-03-27", nir=0.9, n_clear=40)
+    pandas.concat([long, sliver]).to_parquet(
+        tmp_path / "19169" / "gcvi_mpc_maize_2018.parquet"
+    )
+    pandas.testing.assert_frame_equal(mpc.fit(tmp_path, crop="maize"), expected)

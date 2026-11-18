@@ -466,10 +466,15 @@ def read_years(
     return long
 
 
+# AMBIGUITIES.md #20: a county-date under this clear fraction is a mean over a sliver, not
+# the county, so the fit drops it and the gate forgives the two grids disagreeing on it
+SLIVER = 0.05
+
+
 def fit(out: pathlib.Path, crop: str) -> pandas.DataFrame:
-    """Fit Eq. 2 to every year read into `out`; the long tables are kept, so the counts
-    stay available for #20's rule after `gee.clean` drops them."""
+    """Fit Eq. 2 to every year read into `out`, without #20's sliver dates."""
     long = read_years(out=out, prefix="gcvi_mpc", crop=crop, keys=gee.KEY_COLUMNS)
+    long = long[long["n_clear"] >= SLIVER * long["n_crop"]]
     return gee.fit_table(long=gee.clean(long), crop=crop)
 
 
@@ -489,7 +494,6 @@ def fit_target(out: pathlib.Path, crop: str) -> pandas.DataFrame:
 
 
 # the Phase 1.4 gate against Earth Engine; a date under SLIVER clear is reported, not gated
-SLIVER = 0.05
 MAX_ONE_SIDED_CLEAR = 100
 MIN_IDENTICAL_DATES = 0.95
 MAX_MEDIAN_REL = 0.003
@@ -506,7 +510,11 @@ def compare(
     g, m = gee.clean(gee_raw), gee.clean(mpc_raw)
     clear = mpc_raw.set_index("date")["n_clear"]
     frac = clear / mpc_raw.set_index("date")["n_crop"]
-    one_sided = set(g["date"]) ^ set(m["date"])
+    # `fit` never sees a sliver, so only a date it would keep can disagree; one missing
+    # from MPC's own rows has no count, so it can't pass as a sliver
+    one_sided = {
+        d for d in set(g["date"]) ^ set(m["date"]) if frac.get(d, math.inf) >= SLIVER
+    }
     both = g.merge(m, on="date", suffixes=("_g", "_m"))
     rel = (both["gcvi_m"] / both["gcvi_g"] - 1).abs()
     sliver = both["date"].map(frac) < SLIVER
@@ -521,7 +529,6 @@ def compare(
         "dates_gee": len(g),
         "dates_mpc": len(m),
         "one_sided": len(one_sided),
-        # a date missing from MPC's own rows has no count, so it can't pass as a sliver
         "one_sided_clear": max((clear.get(d, math.inf) for d in one_sided), default=0),
         "rel_median": float(gated.median()),
         "rel_p95": float(gated.quantile(0.95)),
@@ -578,8 +585,11 @@ def main() -> int:
         rows = []
         for fips, year in (line.split() for line in args.gate.read_text().splitlines()):
             mpc_raw = pandas.read_parquet(
+                # sherlock.sbatch's layout, data/mpc/<state>/<county>
                 year_path(
-                    out=gee.DATA_DIR / "mpc" / fips, crop=args.crop, year=int(year)
+                    out=gee.DATA_DIR / "mpc" / fips[:2] / fips,
+                    crop=args.crop,
+                    year=int(year),
                 )
             )
             gee_raw = pandas.read_csv(
