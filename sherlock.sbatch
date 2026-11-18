@@ -3,6 +3,10 @@
 # A task resumes by skipping years already on disk, so a timeout or preemption costs at
 # most the year in flight: resubmit the same array and only the missing work reruns.
 #
+# Outputs go to $SCRATCH/qdann/mpc/19/<fips>, off the NFS-backed $HOME. $SCRATCH is purged
+# of files unmodified for 90 days and is not backed up: copy the results somewhere durable
+# (your laptop, $GROUP_HOME or Oak) once the fit is done.
+#
 # Once, on a login node (compute jobs must not download or sync, 99 at once would race):
 # Sherlock's glibc (2.17) is older than the torch/pyproj/rasterio wheels need (2.28), so the
 # venv is built and run inside a Debian container that has uv and Python 3.14:
@@ -24,7 +28,8 @@
 
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
+out="$SCRATCH/qdann/mpc/19"
 python="apptainer exec py.sif .venv/bin/python"
 fips=$($python -c "from qdann import mpc; print(sorted(mpc.state_counties('19'))[$SLURM_ARRAY_TASK_ID])")
 exec $python -m qdann.mpc --crop maize --years 2008-2018 --county "$fips" --target \
-    --out "data/mpc/19/$fips"
+    --out "$out/$fips"

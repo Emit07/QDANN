@@ -1,6 +1,6 @@
 #!/bin/bash
 # Eq. 2 over every county directory sherlock.sbatch read: writes gcvi_mpc_maize.parquet and
-# gcvi_target_mpc_maize.parquet under data/mpc/19. Chain it after the read array so it
+# gcvi_target_mpc_maize.parquet under $SCRATCH/qdann/mpc/19. Chain it after the read array so it
 # starts only once every county succeeded:
 #
 #   jid=$(sbatch --parsable sherlock.sbatch)
@@ -15,4 +15,4 @@
 
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
-exec apptainer exec py.sif .venv/bin/python -m qdann.mpc --crop maize --fit data/mpc/19
+exec apptainer exec py.sif .venv/bin/python -m qdann.mpc --crop maize --fit "$SCRATCH/qdann/mpc/19"
