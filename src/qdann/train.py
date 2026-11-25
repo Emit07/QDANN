@@ -381,7 +381,7 @@ def evaluate_seeds(
     # ponytail: one process per seed, workers log nothing; flatten ablation's arms into
     # one pool if 5 seeds on more cores leaves them idle
     with concurrent.futures.ProcessPoolExecutor(
-        min(len(seeds), os.cpu_count() or 1)
+        min(len(seeds), os.process_cpu_count() or 1)
     ) as pool:
         runs = list(
             pool.map(functools.partial(evaluate, table, epochs, **kwargs), seeds)
