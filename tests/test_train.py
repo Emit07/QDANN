@@ -112,6 +112,15 @@ def test_the_vae_filter_drops_source_rows_and_still_scores():
     }
 
 
+def test_an_unmixed_target_is_scored_but_leaves_training_alone():
+    source = table()
+    target = source.copy()
+    alone = train.evaluate(source, epochs=20)
+    unmixed = train.evaluate(source, epochs=20, target=target, mix_target=False)
+    assert unmixed["r2"] == alone["r2"]
+    assert "pixel_county_rmse" in unmixed
+
+
 def test_sample_weights_reach_the_quantile_loss():
     """A row weighted to nothing must not move the fit; one weighted alone must."""
     x = torch.randn(64, weather.N_FEATURES)

@@ -600,3 +600,43 @@ comparison (held-out, leave-one-year-out, ablation, target transfer) is planned 
 full target exists.
 
 `implementation_choice`
+
+## 25. Pixel weather from the Climatology Lab files, not Earth Engine
+
+**Paper.** §2.3 resamples gridMET to 30 m for the subfield samples, through Earth Engine.
+
+**Problem.** Stage 1 predicts every crop pixel. Doing that through Earth Engine would put the
+whole pipeline back on an Earth Engine quota, which `mpc` was written to avoid.
+
+**Choice.** `weather.cell_means` reads the Climatology Lab's annual netCDFs, the files Earth
+Engine's `IDAHO_EPSCOR/GRIDMET` is built from. It takes each month's mean of the daily values,
+as `weather.monthly_means` does. Each pixel takes the value of the gridMET cell its centre falls
+in, which is the value a nearest upsample to 30 m would give. Over the 99 Iowa counties in
+2018, county means from the files match Earth Engine's `gridmet_maize.parquet` at correlation
+0.9993 or better on all 20 features. The largest gaps are 0.05 K in temperature, 0.4 W/m2 in
+srad, 0.18 mm in pr and 0.008 kPa in vpd. They come from Earth Engine weighting a county's
+edge cells by the fraction inside the county.
+
+**Impact if wrong.** Negligible for the features. Each download is about 700 MB per year
+(5 files).
+
+`implementation_choice`
+
+## 26. Pixel intervals carry the county-scale margin
+
+**Paper.** No intervals (see #23).
+
+**Problem.** The conformal margin from `qdann.tune` is calibrated on held-out county-years.
+A single pixel's error is larger than a county mean's, because pixel errors partly cancel in
+the mean. Nothing measures pixel error: there are no pixel yields.
+
+**Choice.** `predict` writes lo = min(q10, q50) - margin and hi = max(q90, q50) + margin at
+each pixel, using the county-scale margin. The 5' Ylo/Yhi grids are the mean of those bounds
+over the cell's pixels. A pixel with no prediction (fewer than 20 clear dates, #18) takes its
+county's mean prediction in the 5' products. It gets no value in the 30 m map.
+
+**Impact if wrong.** At a pixel the true 80% interval is wider, so read lo/hi as a lower bound
+on the uncertainty, not a calibrated interval. A 5' cell averages hundreds of pixels, so its
+interval is closer to the county scale the margin was fitted on.
+
+`implementation_choice`

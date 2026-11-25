@@ -90,6 +90,17 @@ class Grid(typing.NamedTuple):
     height: int
 
 
+class Pixels(typing.NamedTuple):
+    """One county-year's crop pixels: green and NIR are (crop pixels, dates), NaN where
+    masked, the pixels in the order of `crop`'s True cells."""
+
+    on: Grid
+    crop: numpy.ndarray
+    dates: numpy.ndarray
+    green: numpy.ndarray
+    nir: numpy.ndarray
+
+
 def download(url: str, path: pathlib.Path) -> pathlib.Path:
     """Fetch `url` to `path` once; a partial download never takes the final name."""
     if not path.exists():
@@ -348,12 +359,15 @@ def date_means(
     grids: dict[str, Grid],
     crops: dict[str, numpy.ndarray],
     points: pandas.DataFrame,
-) -> tuple[list[dict], pandas.DataFrame]:
+    full: bool = False,
+) -> tuple[list[dict], pandas.DataFrame, dict[str, tuple[numpy.ndarray, numpy.ndarray]]]:
     """One row per county the date's scenes touch, and one per clear target point. Each
     scene's assets are opened once and read per county, so only one county-date is ever
-    held in memory, and the points reuse the blocks the counties just fetched."""
+    held in memory, and the points reuse the blocks the counties just fetched. With
+    `full`, also each county's green and NIR at every crop pixel, NaN where masked, in the
+    order of `crops[fips]`'s True pixels."""
     footprints = [shapely.geometry.shape(item.geometry) for item in items]
-    rows = []
+    rows, series = [], {}
     # the reads wait on HTTP, not the CPU, and each thread holds its own dataset; the
     # options rasterio.Env set on the main thread are global, so the workers see them
     with (
@@ -378,6 +392,11 @@ def date_means(
             )
             clear = crop & ~numpy.isnan(green)
             n_clear = int(clear.sum())
+            if full:
+                series[fips] = (
+                    green[crop].astype(numpy.float32),
+                    nir[crop].astype(numpy.float32),
+                )
             rows.append(
                 {
                     "fips": fips,
@@ -400,8 +419,12 @@ def date_means(
             for bands in sources
         )
     clear = ~numpy.isnan(green)
-    return rows, points.loc[clear, ["fips", "pid"]].assign(
-        date=date(items[0]), green=green[clear], nir=nir[clear]
+    return (
+        rows,
+        points.loc[clear, ["fips", "pid"]].assign(
+            date=date(items[0]), green=green[clear], nir=nir[clear]
+        ),
+        series,
     )
 
 
@@ -410,10 +433,12 @@ def county_means(
     year: int,
     counties: dict[str, shapely.Geometry],
     points: pandas.DataFrame | None = None,
-) -> tuple[pandas.DataFrame, list[str], pandas.DataFrame]:
-    """The long table (fips, year, date, green, nir, n_clear, n_crop), the scene ids, and
-    the target's long table (fips, pid, year, date, green, nir) at `points` (pid, fips,
-    lon, lat), read from the same scenes in the same pass."""
+    full: bool = False,
+) -> tuple[pandas.DataFrame, list[str], pandas.DataFrame, dict[str, Pixels]]:
+    """The long table (fips, year, date, green, nir, n_clear, n_crop), the scene ids, the
+    target's long table (fips, pid, year, date, green, nir) at `points` (pid, fips, lon,
+    lat), read from the same scenes in the same pass, and with `full` every crop pixel's
+    series per county (empty without)."""
     if points is None:
         points = pandas.DataFrame(columns=["fips", "pid", "lon", "lat"])
     region = shapely.union_all(list(counties.values()))
@@ -425,22 +450,39 @@ def county_means(
         for fips, polygon in counties.items()
     }
     logger.info("%d: %d scenes, %d CDL tiles", year, len(items), len(tiles))
-    rows, pixels = [], []
+    # dates one at a time: 4 in flight and GDAL_HTTP_MERGE_CONSECUTIVE_RANGES were each
+    # slower on a 4-CPU laptop (2026-11-25, 12 dates x 3 rounds), and the blobs speak
+    # HTTP/1.1 only, so GDAL_HTTP_MULTIPLEX has nothing to multiplex
+    rows, pixels, dates, series = [], [], [], {}
     for day, group in itertools.groupby(items, key=date):
         group = list(group)
-        means, values = retry(
-            lambda group=group: date_means(group, counties, grids, crops, points)
+        means, values, stacks = retry(
+            lambda group=group: date_means(group, counties, grids, crops, points, full)
         )
         rows += means
         pixels.append(values)
+        dates.append(day)
+        for fips in counties:
+            series.setdefault(fips, []).append(stacks.get(fips))
         logger.info("%d: %s done (%d scenes)", year, day, len(group))
     long = pandas.DataFrame(
         rows, columns=["fips", "date", "green", "nir", "n_clear", "n_crop"]
     )
     long.insert(1, "year", year)
+    full_series = {}
+    for fips, stacks in series.items() if full else ():
+        # a date whose scenes miss the county leaves every pixel unseen
+        unseen = numpy.full(int(crops[fips].sum()), numpy.nan, dtype=numpy.float32)
+        full_series[fips] = Pixels(
+            on=grids[fips],
+            crop=crops[fips],
+            dates=numpy.array(dates),
+            green=numpy.stack([s[0] if s else unseen for s in stacks], axis=1),
+            nir=numpy.stack([s[1] if s else unseen for s in stacks], axis=1),
+        )
     pixels = pandas.concat(pixels, ignore_index=True) if pixels else points.iloc[:0]
     pixels.insert(2, "year", year)
-    return long, [item.id for item in items], pixels
+    return long, [item.id for item in items], pixels, full_series
 
 
 def year_path(out: pathlib.Path, crop: str, year: int) -> pathlib.Path:
@@ -639,7 +681,7 @@ def main() -> int:
                 logger.info("%d: %s exists, skipping", year, path)
                 continue
             started = time.monotonic()
-            long, ids, pixels = county_means(
+            long, ids, pixels, _ = county_means(
                 crop=args.crop,
                 year=year,
                 counties=counties,

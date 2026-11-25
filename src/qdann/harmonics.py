@@ -60,3 +60,35 @@ def fit(
     # a regular grid of fewer than 2*w*n+1 dates aliases the fastest harmonic onto a slower
     # one. lstsq answers either with a minimum-norm solution rather than an error
     return coefficients if rank == n_coefficients else unfitted
+
+
+def fit_many(
+    t: numpy.ndarray,
+    y: numpy.ndarray,
+    n: int = N_HARMONICS,
+    w: float = OMEGA,
+    min_observations: int | None = None,
+) -> numpy.ndarray:
+    """`fit` for every row of `y` (pixels x dates) at once, on the shared dates `t`.
+
+    NaN in `y` marks a date the pixel was not seen. Each row is solved from its own normal
+    equations, which equal `fit`'s least squares wherever the design has full rank; a row
+    under the floor or rank-deficient gets NaNs, as `fit` answers.
+    """
+    x = design(t=t, n=n, w=w)
+    k = x.shape[1]
+    if min_observations is None:
+        min_observations = k
+    seen = numpy.isfinite(y)
+    yz = numpy.where(seen, y, 0.0)
+    # sum over seen dates of x_d x_d', one matmul for every pixel
+    outer = (x[:, :, None] * x[:, None, :]).reshape(len(x), k * k)
+    a = (seen.astype(float) @ outer).reshape(len(y), k, k)
+    b = yz @ x
+    ret = numpy.full((len(y), k), numpy.nan)
+    ok = (seen.sum(axis=1) >= min_observations) & (
+        numpy.linalg.matrix_rank(a) == k
+    )
+    if ok.any():
+        ret[ok] = numpy.linalg.solve(a[ok], b[ok][..., None])[..., 0]
+    return ret

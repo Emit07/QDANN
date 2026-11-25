@@ -345,6 +345,7 @@ def evaluate(
     interval_weight: float = 0.0,
     inner: bool = False,
     holdout_year: int | None = None,
+    mix_target: bool = True,
 ) -> dict[str, float]:
     """Fit one arm and score it on the held-out counties.
 
@@ -368,6 +369,9 @@ def evaluate(
     training and scores the held-out counties in it alone: one fold of leave-one-year-out.
     With `interval_weight` > 0 half the held-out counties calibrate the q10/q90 interval
     (`conformal`) and the other half score it.
+
+    `mix_target=False` keeps the target out of training (no mixed batches, so BatchNorm
+    sees the source only) and still scores its pixels: the no-target head on target pixels.
     """
     features = feature_columns(table)
     train, test = split(table, seed=seed)
@@ -413,7 +417,7 @@ def evaluate(
     model = fit(
         source_x=train_x,
         source_y=train_y_std,
-        target_x=rest[0] if rest else None,
+        target_x=rest[0] if rest and mix_target else None,
         sample_weights=sample_weights,
         adversarial=adversarial,
         quantile=quantile,

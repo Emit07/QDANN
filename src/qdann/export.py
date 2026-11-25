@@ -43,6 +43,11 @@ CROP_TO_SPAM = {"maize": "MAIZ", "soybean": "SOYB", "winter_wheat": "WHEA"}
 
 def cell_counts(mask: numpy.ndarray, on: mpc.Grid) -> tuple[numpy.ndarray, numpy.ndarray]:
     """The flat 5' cell index of each True pixel's centre, as (cells, pixel counts)."""
+    return numpy.unique(cell_index(mask, on), return_counts=True)
+
+
+def cell_index(mask: numpy.ndarray, on: mpc.Grid) -> numpy.ndarray:
+    """The flat 5' cell of each True pixel's centre, in `mask[mask]` order."""
     rows, cols = numpy.nonzero(mask)
     xs, ys = on.transform @ (cols + 0.5, rows + 0.5)
     lon, lat = pyproj.Transformer.from_crs(on.crs, "EPSG:4326", always_xy=True).transform(
@@ -50,7 +55,7 @@ def cell_counts(mask: numpy.ndarray, on: mpc.Grid) -> tuple[numpy.ndarray, numpy
     )
     row = numpy.floor((90.0 - lat) * CELLS_PER_DEGREE).astype(numpy.int64)
     col = numpy.floor((lon + 180.0) * CELLS_PER_DEGREE).astype(numpy.int64)
-    return numpy.unique(row * FRAME[1] + col, return_counts=True)
+    return row * FRAME[1] + col
 
 
 def spread(

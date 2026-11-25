@@ -12,11 +12,19 @@ the two earlier legs writes.
 """
 
 import argparse
+import calendar
 import logging
+import math
 import pathlib
+import typing
+import urllib.request
 
 import ee
+import numpy
 import pandas
+import rasterio
+import rasterio.windows
+from rasterio.transform import Affine
 
 from qdann import env, gee
 
@@ -33,6 +41,16 @@ CROP_TO_MONTHS = {
     "maize": range(5, 9),
     "soybean": range(5, 9),
     "winter_wheat": range(3, 7),
+}
+
+# the Climatology Lab's annual files, the source Earth Engine ingests GRIDMET from
+GRIDMET_URL = "https://www.northwestknowledge.net/metdata/data/{variable}_{year:d}.nc"
+GRIDMET_NAMES = {
+    "pr": "precipitation_amount",
+    "srad": "surface_downwelling_shortwave_flux_in_air",
+    "tmmn": "air_temperature",
+    "tmmx": "air_temperature",
+    "vpd": "mean_vapor_pressure_deficit",
 }
 
 HARMONIC_COLUMNS = ("c", "a1", "b1", "a2", "b2", "a3", "b3")
@@ -127,6 +145,60 @@ def fetch(crop: str, years: range, state_fips: str) -> pandas.DataFrame:
     return ret.loc[:, [*KEY_COLUMNS, *weather_columns(crop)]].sort_values(
         list(KEY_COLUMNS)
     )
+
+
+class Cells(typing.NamedTuple):
+    """The twenty features on gridMET's own lat/lon grid over a window, (rows, cols) each."""
+
+    values: dict[str, numpy.ndarray]
+    transform: Affine
+
+    def at(self, lon: numpy.ndarray, lat: numpy.ndarray) -> pandas.DataFrame:
+        """Each point's containing cell, as `target.weather_values` reads it in Earth
+        Engine: the value a 30 m upsample would give, without the upsample."""
+        cols, rows = ~self.transform @ (numpy.asarray(lon), numpy.asarray(lat))
+        rows, cols = numpy.floor(rows).astype(int), numpy.floor(cols).astype(int)
+        return pandas.DataFrame({name: v[rows, cols] for name, v in self.values.items()})
+
+
+def gridmet_file(variable: str, year: int) -> pathlib.Path:
+    path = DATA_DIR / "gridmet" / f"{variable}_{year:d}.nc"
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        part = path.with_suffix(".nc.part")
+        urllib.request.urlretrieve(GRIDMET_URL.format(variable=variable, year=year), part)
+        part.rename(path)
+    return path
+
+
+def cell_means(
+    crop: str, year: int, bounds: tuple[float, float, float, float]
+) -> Cells:
+    """`monthly_means` from the downloaded files, over `bounds` (west, south, east, north
+    in degrees): each month the mean of its days, units as Earth Engine serves them."""
+    values, transform = {}, None
+    for variable in VARIABLES:
+        name = f'NETCDF:"{gridmet_file(variable, year)}":{GRIDMET_NAMES[variable]}'
+        with rasterio.open(name) as src:
+            # whole cells, plus one of margin, so an edge pixel's cell is always inside
+            exact = rasterio.windows.from_bounds(*bounds, transform=src.transform)
+            col, row = math.floor(exact.col_off) - 1, math.floor(exact.row_off) - 1
+            window = rasterio.windows.Window(
+                col,
+                row,
+                math.ceil(exact.col_off + exact.width) + 1 - col,
+                math.ceil(exact.row_off + exact.height) + 1 - row,
+            )
+            transform = src.window_transform(window)
+            assert src.count in (365, 366), f"{name} has {src.count:d} days"
+            for month in CROP_TO_MONTHS[crop]:
+                first = sum(calendar.monthrange(year, m)[1] for m in range(1, month))
+                days = range(first + 1, first + calendar.monthrange(year, month)[1] + 1)
+                raw = src.read(list(days), window=window, masked=True).astype(float)
+                # the files pack shorts with a per-variable scale and offset
+                scaled = raw * src.scales[0] + src.offsets[0]
+                values[f"{variable}_{month:d}"] = scaled.mean(axis=0).filled(numpy.nan)
+    return Cells(values=values, transform=transform)
 
 
 def join(

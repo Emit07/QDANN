@@ -68,3 +68,17 @@ def test_design_matches_eq_2_term_by_term():
         angle = 2 * numpy.pi * harmonics.OMEGA * k * t
         assert a[:, 2 * k - 1] == pytest.approx(numpy.cos(angle))
         assert a[:, 2 * k] == pytest.approx(numpy.sin(angle))
+
+
+def test_fit_many_matches_fit_row_by_row():
+    rng = numpy.random.default_rng(0)
+    t = numpy.sort(rng.uniform(0, 1, 40))
+    y = rng.normal(size=(50, 40))
+    # a range of cloud masks, down to rows under the floor
+    y[rng.uniform(size=y.shape) < rng.uniform(0, 1, (50, 1))] = numpy.nan
+    many = harmonics.fit_many(t=t, y=y, min_observations=20)
+    for row, got in zip(y, many):
+        numpy.testing.assert_allclose(
+            got, harmonics.fit(t=t, y=row, min_observations=20), atol=1e-8
+        )
+    assert numpy.isnan(many).all(axis=1).any() and numpy.isfinite(many).all(axis=1).any()
