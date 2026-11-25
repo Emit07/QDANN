@@ -70,7 +70,7 @@ def fit(
     """Train on target-domain vectors only."""
     torch.manual_seed(seed)
     model = VAE(n_features=x.shape[1])
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, fused=True)
     for _ in range(epochs):
         batches = torch.randperm(len(x)).split(batch_size)
         # BatchNorm1d raises on a batch of one, as in train.fit

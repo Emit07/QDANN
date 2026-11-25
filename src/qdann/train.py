@@ -19,7 +19,10 @@ QDANN arm's target pixels, averaged per held-out county-year, in the yield schem
 """
 
 import argparse
+import concurrent.futures
+import functools
 import logging
+import os
 import pathlib
 from collections.abc import Iterable
 
@@ -77,10 +80,14 @@ def fit(
     each other, so they are skipped along with it.
     """
     torch.manual_seed(seed)
+    # one thread: as fast as more at these sizes, and a seed's result otherwise depends
+    # on the machine's core count (R2 0.07 to 0.10 for one seed). `evaluate_seeds`
+    # parallelizes over processes instead
+    torch.set_num_threads(1)
     # Section 3.1 puts the Eq. 8-11 update partway through training, not at a fixed epoch
     weight_update_at = epochs // 2 if weight_update_at is None else weight_update_at
     model = QDANN(n_features=source_x.shape[1], lambda_=1.0 if adversarial else 0.0)
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, fused=True)
     weights = dict.fromkeys(QUANTILES, 1.0)
     logger.info(f"quantile weights before epoch {weight_update_at:d}: {_show(weights)}")
     for epoch in range(epochs):
@@ -368,7 +375,17 @@ def evaluate_seeds(
     is a spread over folds: a single `evaluate` says nearly as much about which counties it
     drew as about the model, which is why Fig. 16's deltas are read off means.
     """
-    runs = [evaluate(table, epochs=epochs, seed=seed, **kwargs) for seed in seeds]
+    # a worker's appends to `counties` would never reach the caller
+    assert "counties" not in kwargs, "evaluate_seeds runs in subprocesses"
+    seeds = list(seeds)
+    # ponytail: one process per seed, workers log nothing; flatten ablation's arms into
+    # one pool if 5 seeds on more cores leaves them idle
+    with concurrent.futures.ProcessPoolExecutor(
+        min(len(seeds), os.cpu_count() or 1)
+    ) as pool:
+        runs = list(
+            pool.map(functools.partial(evaluate, table, epochs, **kwargs), seeds)
+        )
     return {name: [run[name] for run in runs] for name in runs[0]}
 
 

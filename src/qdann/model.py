@@ -28,6 +28,16 @@ class GradientReversal(torch.autograd.Function):
         return -ctx.lambda_ * grad_output, None
 
 
+class _Dropout(nn.Dropout):
+    """nn.Dropout from a uniform draw: CPU bernoulli_ was 40% of a training step, three
+    times what rand_like costs for the same mask."""
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if not self.training or self.p == 0:
+            return x
+        return x * (torch.rand_like(x) >= self.p) / (1 - self.p)
+
+
 def _stack(sizes: list[int], dropout: float, activate_last: bool) -> nn.Sequential:
     """Linear layers over `sizes`, with BatchNorm + ReLU + Dropout between hidden layers.
 
@@ -38,7 +48,7 @@ def _stack(sizes: list[int], dropout: float, activate_last: bool) -> nn.Sequenti
     for i, (in_features, out_features) in enumerate(itertools.pairwise(sizes)):
         layers.append(nn.Linear(in_features, out_features))
         if i < len(sizes) - 2:
-            layers += [nn.BatchNorm1d(out_features), nn.ReLU(), nn.Dropout(dropout)]
+            layers += [nn.BatchNorm1d(out_features), nn.ReLU(), _Dropout(dropout)]
         elif activate_last:
             layers.append(nn.ReLU())
     return nn.Sequential(*layers)

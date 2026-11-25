@@ -23,6 +23,7 @@ rule needs and Earth Engine never returned.
 """
 
 import argparse
+import concurrent.futures
 import contextlib
 import itertools
 import logging
@@ -353,11 +354,15 @@ def date_means(
     held in memory, and the points reuse the blocks the counties just fetched."""
     footprints = [shapely.geometry.shape(item.geometry) for item in items]
     rows = []
-    with contextlib.ExitStack() as stack:
-        sources = [
-            [stack.enter_context(opened(item.assets[name].href)) for name in ASSETS]
-            for item in items
-        ]
+    # the reads wait on HTTP, not the CPU, and each thread holds its own dataset; the
+    # options rasterio.Env set on the main thread are global, so the workers see them
+    with (
+        contextlib.ExitStack() as stack,
+        concurrent.futures.ThreadPoolExecutor(len(ASSETS)) as pool,
+    ):
+        hrefs = [item.assets[name].href for item in items for name in ASSETS]
+        flat = [stack.enter_context(src) for src in pool.map(opened, hrefs)]
+        sources = list(itertools.batched(flat, len(ASSETS)))
         for fips, polygon in counties.items():
             touching = [
                 bands
@@ -368,7 +373,8 @@ def date_means(
                 continue
             on, crop = grids[fips], crops[fips]
             green, nir = mosaic(
-                reflectance(*(read(src, on) for src in bands)) for bands in touching
+                reflectance(*pool.map(lambda src: read(src, on), bands))
+                for bands in touching
             )
             clear = crop & ~numpy.isnan(green)
             n_clear = int(clear.sum())
@@ -388,7 +394,9 @@ def date_means(
             )
         # no CDL mask: the points were drawn on that year's crop pixels (AMBIGUITIES.md #19)
         green, nir = mosaic(
-            reflectance(*(sample(src, points["lon"], points["lat"]) for src in bands))
+            reflectance(
+                *pool.map(lambda src: sample(src, points["lon"], points["lat"]), bands)
+            )
             for bands in sources
         )
     clear = ~numpy.isnan(green)
