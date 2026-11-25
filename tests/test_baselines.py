@@ -52,7 +52,7 @@ def test_the_baselines_score_on_the_same_fold_as_qdann():
     frame = table()
     scores = baselines.evaluate(frame, epochs=20)
     assert set(scores) == {"ridge", "random_forest", "dnn"}
-    assert all(set(s) == {"r2", "rmse", "nrmse"} for s in scores.values())
+    assert all(set(s) == {"r2", "rmse", "nrmse", "within_year_r2"} for s in scores.values())
     # the fold is train.split's own, so the baselines are scored on the counties QDANN
     # held out and not on a second split of their own
     trained, held = train.split(frame, seed=0)

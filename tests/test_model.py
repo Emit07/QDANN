@@ -48,9 +48,11 @@ def test_shapes_and_depth() -> None:
 
     x = torch.randn(8, 27)
     assert model.features(x).shape == (8, 32)
-    yhat, logit = model(x)
+    yhat, logit, bounds = model(x)
     assert yhat.shape == (8,)
     assert logit.shape == (8,)
+    assert bounds.shape == (8, 0)
+    assert QDANN(intervals=True)(x)[2].shape == (8, 2)
 
 
 def test_gradient_reversal_flips_only_the_extractor() -> None:

@@ -48,7 +48,7 @@ def random_forest(
 
 
 def evaluate(
-    table: pandas.DataFrame, epochs: int, seed: int = 0
+    table: pandas.DataFrame, epochs: int, seed: int = 0, dropout: float = 0.5
 ) -> dict[str, dict[str, float]]:
     """All three baselines on the fold `train.evaluate` uses, so the numbers compare.
 
@@ -72,6 +72,7 @@ def evaluate(
         quantile=False,
         epochs=epochs,
         seed=seed,
+        dropout=dropout,
     )
     with torch.no_grad():
         dnn = model(test_x)[0] * std + mean
@@ -83,7 +84,11 @@ def evaluate(
         "dnn": dnn.numpy(),
     }
     return {
-        name: train.scores(y=test_y, yhat=torch.tensor(yhat, dtype=torch.float32))
+        name: train.scores(
+            y=test_y,
+            yhat=torch.tensor(yhat, dtype=torch.float32),
+            years=held["year"].to_numpy(),
+        )
         for name, yhat in predicted.items()
     }
 

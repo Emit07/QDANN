@@ -548,3 +548,29 @@ Section 4.2 uses SCYM to argue QDANN beats the published state of the art, and t
 not re-tested here.
 
 `known_gap` -- a data-availability question, not a modelling decision.
+
+---
+
+## 23. Intervals come from two extra outputs, not from Eq. 7
+
+**Paper.** Eq. 7 trains one output on a weighted sum of three pinball losses (q = 0.1, 0.5,
+0.9), and Eqs. 8-11 rebalance the weights from the source bias. That is a bias-correction
+device. The paper reports no intervals.
+
+**Problem.** The lab explorer and jdLUC want a per-cell low and high estimate. One output
+trained on three quantile losses lands near the median and carries no spread.
+
+**Choice.** `QDANN(intervals=True)` widens the yield head's last Linear to three outputs.
+Output 0 keeps Eq. 7 and Eqs. 8-11 unchanged. Outputs 1 and 2 are trained on plain pinball
+losses at q = 0.1 and 0.9, scaled by `interval_weight` (`train.fit`). The interval is
+[min(q10, point), max(q90, point)], widened by conformalized quantile regression (Romano et
+al. 2019): `train.conformal` calibrates on half the held-out counties and scores coverage on
+the other half. With `interval_weight = 0` the model, its init and its random draws are the
+paper's, so `ablation.py` is unaffected.
+
+**Impact if wrong.** The auxiliary losses share G_f with output 0, so they can move the point
+estimate. `qdann.tune` reports both arms, with and without intervals, to measure this. The
+calibration is for county-scale error, since labels are county means, and only approximate:
+rows of one county are not exchangeable. Pixel-scale coverage cannot be checked.
+
+`implementation_choice`

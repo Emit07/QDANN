@@ -66,6 +66,8 @@ def fit(
     batch_size: int = 256,
     learning_rate: float = 1e-3,
     seed: int = 0,
+    dropout: float = 0.5,
+    interval_weight: float = 0.0,
 ) -> QDANN:
     """Train QDANN, or the same model with the adversarial branch switched off.
 
@@ -78,6 +80,10 @@ def fit(
     `quantile=False` swaps Eq. 7 for plain MSE: the Section 4.2 DNN baseline, and the arm of
     Fig. 16 that removes the quantile loss. Eqs. 8-11 rebalance the three quantiles against
     each other, so they are skipped along with it.
+
+    `interval_weight` > 0 adds q10/q90 outputs trained on plain pinball losses, scaled by
+    it; Eq. 7 and Eqs. 8-11 still act on output 0 alone. 0 is the paper's model, bit for
+    bit. AMBIGUITIES.md #23
     """
     torch.manual_seed(seed)
     # one thread: as fast as more at these sizes, and a seed's result otherwise depends
@@ -86,7 +92,12 @@ def fit(
     torch.set_num_threads(1)
     # Section 3.1 puts the Eq. 8-11 update partway through training, not at a fixed epoch
     weight_update_at = epochs // 2 if weight_update_at is None else weight_update_at
-    model = QDANN(n_features=source_x.shape[1], lambda_=1.0 if adversarial else 0.0)
+    model = QDANN(
+        n_features=source_x.shape[1],
+        lambda_=1.0 if adversarial else 0.0,
+        dropout=dropout,
+        intervals=interval_weight > 0,
+    )
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, fused=True)
     weights = dict.fromkeys(QUANTILES, 1.0)
     logger.info(f"quantile weights before epoch {weight_update_at:d}: {_show(weights)}")
@@ -108,7 +119,7 @@ def fit(
                 # one mixed batch, so the discriminator cannot separate the domains on
                 # per-domain normalization statistics (AMBIGUITIES.md #6)
                 x = torch.cat([x, target_x[torch.randint(len(target_x), (n,))]])
-            yhat, logit = model(x)
+            yhat, logit, bounds = model(x)
             batch_weights = None if sample_weights is None else sample_weights[batch]
             loss = (
                 quantile_loss(
@@ -122,6 +133,16 @@ def fit(
                     y=source_y[batch], yhat=yhat[:n], sample_weights=batch_weights
                 )
             )
+            if interval_weight > 0:
+                loss = loss + interval_weight * sum(
+                    quantile_loss(
+                        y=source_y[batch],
+                        yhat=bounds[:n, i],
+                        weights={q: 1.0},
+                        sample_weights=batch_weights,
+                    )
+                    for i, q in enumerate((0.1, 0.9))
+                )
             if adversarial:
                 loss = loss + domain_loss(
                     logit=logit, d=torch.cat([torch.ones(n), torch.zeros(n)])
@@ -159,11 +180,56 @@ def feature_columns(table: pandas.DataFrame) -> list[str]:
     return ret
 
 
-def scores(y: torch.Tensor, yhat: torch.Tensor) -> dict[str, float]:
-    return {
+def within_year_r2(y: torch.Tensor, yhat: torch.Tensor, years: numpy.ndarray) -> float:
+    """Eq. 17 inside each year, averaged over years: the paper's protocol, and free of the
+    between-year variance that inflates the pooled R2. Years with fewer than 3 rows are
+    skipped."""
+    values = [
+        r_squared(y=y[mask], yhat=yhat[mask])
+        for year in numpy.unique(years)
+        if (mask := torch.from_numpy(years == year)).sum() >= 3
+    ]
+    return float(numpy.mean(values)) if values else float("nan")
+
+
+def scores(
+    y: torch.Tensor, yhat: torch.Tensor, years: numpy.ndarray | None = None
+) -> dict[str, float]:
+    ret = {
         "r2": r_squared(y=y, yhat=yhat),
         "rmse": rmse(y=y, yhat=yhat),
         "nrmse": nrmse(y=y, yhat=yhat),
+    }
+    if years is not None:
+        ret["within_year_r2"] = within_year_r2(y=y, yhat=yhat, years=years)
+    return ret
+
+
+def conformal(
+    y: torch.Tensor,
+    lo: torch.Tensor,
+    hi: torch.Tensor,
+    calibrate: numpy.ndarray,
+    alpha: float = 0.2,
+) -> dict[str, float]:
+    """Conformalized quantile regression (Romano et al. 2019) on a calibration subset of
+    the held-out rows, scored on the rest.
+
+    The rows are county-years and the calibration split is by county, so the guarantee is
+    for county-scale error, and only approximately: rows of one county are not
+    exchangeable with each other.
+    """
+    cal, test = torch.from_numpy(calibrate), torch.from_numpy(~calibrate)
+    errors = torch.maximum(lo[cal] - y[cal], y[cal] - hi[cal]).numpy()
+    n = len(errors)
+    level = min(1.0, numpy.ceil((n + 1) * (1 - alpha)) / n)
+    margin = float(numpy.quantile(errors, level, method="higher"))
+    y, lo, hi = y[test], lo[test], hi[test]
+    return {
+        "raw_coverage": float(((lo <= y) & (y <= hi)).float().mean()),
+        "coverage": float(((lo - margin <= y) & (y <= hi + margin)).float().mean()),
+        "conformal_margin": margin,
+        "interval_width": float((hi - lo).mean() + 2 * margin),
     }
 
 
@@ -275,6 +341,10 @@ def evaluate(
     vae_filter: bool = False,
     crop: str | None = None,
     counties: list[pandas.DataFrame] | None = None,
+    dropout: float = 0.5,
+    interval_weight: float = 0.0,
+    inner: bool = False,
+    holdout_year: int | None = None,
 ) -> dict[str, float]:
     """Fit one arm and score it on the held-out counties.
 
@@ -292,9 +362,20 @@ def evaluate(
 
     With a target, the pixels are also scored as county means (`pixel_counties`), which
     is appended to `counties` when one is passed.
+
+    `inner` scores on a second split of the training counties instead, so settings can be
+    picked without touching the held-out ones. `holdout_year` drops that year from
+    training and scores the held-out counties in it alone: one fold of leave-one-year-out.
+    With `interval_weight` > 0 half the held-out counties calibrate the q10/q90 interval
+    (`conformal`) and the other half score it.
     """
     features = feature_columns(table)
     train, test = split(table, seed=seed)
+    if inner:
+        train, test = split(train, seed=seed)
+    if holdout_year is not None:
+        train = train[train["year"] != holdout_year]
+        test = test[test["year"] == holdout_year]
     logger.info(
         f"{len(train):d} rows / {train['fips'].nunique():d} counties train, "
         f"{len(test):d} rows / {test['fips'].nunique():d} counties held out"
@@ -338,14 +419,30 @@ def evaluate(
         quantile=quantile,
         epochs=epochs,
         seed=seed,
+        dropout=dropout,
+        interval_weight=interval_weight,
     )
     with torch.no_grad():
-        yhat = model(test_x)[0] * std + mean
+        yhat, _, bounds = model(test_x)
+        yhat, bounds = yhat * std + mean, bounds * std + mean
+    years = test["year"].to_numpy()
     baseline = per_year_mean(train, test)
-    ret = scores(y=test_y, yhat=yhat) | {
-        f"per_year_mean_{name}": value
-        for name, value in scores(y=test_y, yhat=baseline).items()
-    }
+    ret = (
+        scores(y=test_y, yhat=yhat, years=years)
+        | {
+            f"per_year_mean_{name}": value
+            for name, value in scores(y=test_y, yhat=baseline, years=years).items()
+        }
+        | {"n_test": float(len(test))}
+    )
+    if interval_weight > 0:
+        _, calibration = split(test, holdout=0.5, seed=seed)
+        ret |= conformal(
+            y=test_y,
+            lo=torch.minimum(bounds[:, 0], yhat),
+            hi=torch.maximum(bounds[:, 1], yhat),
+            calibrate=test.index.isin(calibration.index),
+        )
     if rest:
         ret["domain_accuracy"] = domain_accuracy(
             model, source_x=train_x, target_x=rest[0], seed=seed

@@ -72,6 +72,7 @@ class QDANN(nn.Module):
         n_head_hidden: int = 2,
         dropout: float = 0.5,
         lambda_: float = 1.0,
+        intervals: bool = False,
     ) -> None:
         super().__init__()
         self.lambda_ = lambda_
@@ -82,15 +83,24 @@ class QDANN(nn.Module):
             dropout=dropout,
             activate_last=True,
         )
-        head_sizes = [feature_out, *[hidden] * (1 + n_head_hidden), 1]
-        self.yield_head = _stack(head_sizes, dropout=dropout, activate_last=False)
+        head_sizes = [feature_out, *[hidden] * (1 + n_head_hidden)]
+        # `intervals` adds q10 and q90 as outputs 1 and 2 of the last Linear; output 0
+        # stays Eq. 7's point estimate. Off, the head and its init are the paper's.
+        # AMBIGUITIES.md #23
+        self.yield_head = _stack(
+            [*head_sizes, 3 if intervals else 1], dropout=dropout, activate_last=False
+        )
         # a logit, paired with BCEWithLogitsLoss; Eq. 5 is plain cross-entropy either way
-        self.discriminator = _stack(head_sizes, dropout=dropout, activate_last=False)
+        self.discriminator = _stack(
+            [*head_sizes, 1], dropout=dropout, activate_last=False
+        )
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self, x: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Point yield, domain logit, and the (n, 2) q10/q90 outputs ((n, 0) without
+        `intervals`)."""
         z = self.features(x)
         reversed_z = GradientReversal.apply(z, self.lambda_)
-        return (
-            self.yield_head(z).squeeze(-1),
-            self.discriminator(reversed_z).squeeze(-1),
-        )
+        out = self.yield_head(z)
+        return out[:, 0], self.discriminator(reversed_z).squeeze(-1), out[:, 1:]

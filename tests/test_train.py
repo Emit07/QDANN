@@ -103,6 +103,9 @@ def test_the_vae_filter_drops_source_rows_and_still_scores():
         "per_year_mean_r2",
         "per_year_mean_rmse",
         "per_year_mean_nrmse",
+        "within_year_r2",
+        "per_year_mean_within_year_r2",
+        "n_test",
         "domain_accuracy",
         "pixel_county_rmse",
         "pixel_county_n",
@@ -200,3 +203,21 @@ def test_pixels_become_held_out_county_yields_in_jdluc_schema():
     assert yields.index[0] == ("DISTRICT", "USA19001", "Iowa | Adair", "CORN", 2018)
     assert yields["yield_kg_per_ha"].tolist() == [11000.0, 13000.0]
     assert set(yields["yield_tier"]) == {"QDANN"}
+
+
+def test_intervals_are_calibrated_and_the_inner_split_skips_the_holdout():
+    scores = train.evaluate(table(), epochs=200, interval_weight=1.0, inner=True)
+    assert 0.0 <= scores["coverage"] <= 1.0
+    assert scores["interval_width"] > 0
+    # inner validation scores a split of the 32 training counties, not the 8 held out
+    assert scores["n_test"] == 6 * 11
+
+
+def test_conformal_widens_an_interval_that_undercovers():
+    y = torch.linspace(0, 1, 200)
+    calibrate = numpy.arange(200) % 2 == 0
+    out = train.conformal(y=y, lo=y - 0.01, hi=y + 0.01, calibrate=calibrate)
+    assert out["conformal_margin"] < 0
+    y_noisy = y + torch.randn(200, generator=torch.Generator().manual_seed(0))
+    out = train.conformal(y=y_noisy, lo=y - 0.01, hi=y + 0.01, calibrate=calibrate)
+    assert out["raw_coverage"] < 0.1 and abs(out["coverage"] - 0.8) < 0.1
