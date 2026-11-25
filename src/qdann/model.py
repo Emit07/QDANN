@@ -9,6 +9,9 @@ import itertools
 import torch
 from torch import nn
 
+# the paper's 0.5 underfits ~860 county rows; picked on an inner split, AMBIGUITIES.md #24
+DROPOUT = 0.1
+
 
 class GradientReversal(torch.autograd.Function):
     """Identity on the forward pass, negated and scaled gradient on the backward pass.
@@ -70,7 +73,7 @@ class QDANN(nn.Module):
         feature_out: int = 32,
         n_feature_hidden: int = 4,
         n_head_hidden: int = 2,
-        dropout: float = 0.5,
+        dropout: float = DROPOUT,
         lambda_: float = 1.0,
         intervals: bool = False,
     ) -> None:

@@ -40,7 +40,7 @@ def test_the_mse_branch_carries_the_vae_weights():
 
 def test_fit_learns_without_the_quantile_loss():
     x, y = linear(n=256)
-    # dropout is 0.5 and one epoch is one batch here, so this needs the larger step
+    # one epoch is one batch here, so this needs the larger step
     model = train.fit(
         source_x=x, source_y=y, quantile=False, epochs=400, learning_rate=1e-2
     )

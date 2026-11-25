@@ -12,12 +12,12 @@ n_features     = { value = 27, src = "paper_specified" }              # 7 harmon
 feature_hidden = { value = [64, 64, 64, 64], src = "paper_specified" }
 feature_out    = { value = 32, src = "paper_specified" }
 head_hidden    = { value = [64, 64], src = "paper_specified" }
-dropout        = { value = 0.5, src = "paper_specified" }
+dropout        = { value = 0.1, src = "implementation_choice" }  # paper 0.5, AMBIGUITIES #24
 
 [train]
 lambda_          = { value = 1.0, src = "paper_specified" }           # Eq. 3
-epochs           = { value = 400, src = "paper_specified" }
-weight_update_at = { value = 200, src = "paper_specified" }           # M
+epochs           = { value = 1000, src = "implementation_choice" }  # paper 400, AMBIGUITIES #24
+weight_update_at = { value = 500, src = "implementation_choice" }     # M; paper 200 of 400, kept at epochs / 2
 quantiles        = { value = [0.1, 0.5, 0.9], src = "paper_specified" }
 
 # never stated in the paper

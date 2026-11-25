@@ -574,3 +574,29 @@ calibration is for county-scale error, since labels are county means, and only a
 rows of one county are not exchangeable. Pixel-scale coverage cannot be checked.
 
 `implementation_choice`
+
+---
+
+## 24. Dropout 0.1 and 1000 epochs, not the paper's 0.5 and 400
+
+**Paper.** §3.1 gives dropout 0.5 between hidden layers and 400 epochs, with the Eq. 8-11
+update at M = 200.
+
+**Problem.** The paper trains on about 6,000 county-years; Iowa gives about 860. At dropout 0.5
+across eight hidden layers the head underfits: train R2 roughly equals held-out R2 (about 0.65),
+so it never fits its own training rows.
+
+**Choice.** Dropout 0.1 and 1000 epochs, with M kept at half the epochs. `qdann.tune` picked
+them on an inner split of each fold's training counties, so the held-out counties played no
+part (2026-11-24, `data/tune_maize.json`). Inner R2 was 0.474 at (0.5, 1000) and 0.862-0.871
+for dropout 0.1-0.3 at 1000 or 3000 epochs; that spread is noise, and 3000 epochs never helped.
+On the held-out counties the head scores R2 0.903, against 0.881 for the random forest.
+`model.DROPOUT` holds the value, and `--dropout 0.5` on `train` and `baselines` restores the
+paper's setting.
+
+**Impact if wrong.** Results are no longer a strict reproduction of the paper's configuration.
+With less dropout the head may overfit more where training data are thin. A full 0.5-vs-0.1
+comparison (held-out, leave-one-year-out, ablation, target transfer) is planned once the Stage 1
+full target exists.
+
+`implementation_choice`

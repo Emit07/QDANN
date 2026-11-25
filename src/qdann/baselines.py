@@ -20,6 +20,7 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import Ridge
 
 from qdann import train, weather
+from qdann.model import DROPOUT
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,7 @@ def random_forest(
 
 
 def evaluate(
-    table: pandas.DataFrame, epochs: int, seed: int = 0, dropout: float = 0.5
+    table: pandas.DataFrame, epochs: int, seed: int = 0, dropout: float = DROPOUT
 ) -> dict[str, dict[str, float]]:
     """All three baselines on the fold `train.evaluate` uses, so the numbers compare.
 
@@ -101,11 +102,14 @@ def main() -> int:
     )
     parser.add_argument("--epochs", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--dropout", type=float, default=DROPOUT)
     args = parser.parse_args()
 
     table = weather.read(weather.DATA_DIR / f"source_{args.crop}.parquet")
     print()
-    for name, scores in evaluate(table, epochs=args.epochs, seed=args.seed).items():
+    for name, scores in evaluate(
+        table, epochs=args.epochs, seed=args.seed, dropout=args.dropout
+    ).items():
         print(
             f"{name:>14s}  R2 {scores['r2']:6.3f}  RMSE {scores['rmse']:5.3f} t/ha"
             f"  NRMSE {scores['nrmse']:5.3f}"

@@ -39,7 +39,7 @@ from qdann.losses import (
     quantile_loss,
     update_quantile_weights,
 )
-from qdann.model import QDANN
+from qdann.model import DROPOUT, QDANN
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +66,7 @@ def fit(
     batch_size: int = 256,
     learning_rate: float = 1e-3,
     seed: int = 0,
-    dropout: float = 0.5,
+    dropout: float = DROPOUT,
     interval_weight: float = 0.0,
 ) -> QDANN:
     """Train QDANN, or the same model with the adversarial branch switched off.
@@ -341,7 +341,7 @@ def evaluate(
     vae_filter: bool = False,
     crop: str | None = None,
     counties: list[pandas.DataFrame] | None = None,
-    dropout: float = 0.5,
+    dropout: float = DROPOUT,
     interval_weight: float = 0.0,
     inner: bool = False,
     holdout_year: int | None = None,
@@ -514,6 +514,12 @@ def main() -> int:
     parser.add_argument("--epochs", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
+        "--dropout",
+        type=float,
+        default=DROPOUT,
+        help="0.5 is the paper's setting (AMBIGUITIES.md #24)",
+    )
+    parser.add_argument(
         "--target",
         action="store_true",
         help="mix in the unlabelled pixels and run both arms of the ablation",
@@ -547,6 +553,7 @@ def main() -> int:
             target=target,
             adversarial=adversarial,
             counties=counties,
+            dropout=args.dropout,
         )
         report(name, scores)
     print(
