@@ -37,6 +37,7 @@ FRAME_TRANSFORM = rasterio.transform.from_origin(
     -180.0, 90.0, 1 / CELLS_PER_DEGREE, 1 / CELLS_PER_DEGREE
 )
 DISTRICT_YEARS = range(2008, 2024)
+PIXEL_HA = mpc.PIXEL_M**2 / 10_000
 CROP_TO_SPAM = {"maize": "MAIZ", "soybean": "SOYB", "winter_wheat": "WHEA"}
 
 
@@ -156,11 +157,17 @@ def main() -> int:
                 )
             year_stats = stats[stats["year"] == year]
             grids = spread(pixels, year_stats, districts)
+            cdl_ha = sum(c.sum() for _, c in pixels.values()) * PIXEL_HA
+            # the lab's own CDL grids (build_cdl_5min.py) count these same pixels at 0.09 ha,
+            # so H / CDL area is the calibration factor between the two area bases
             logger.info(
-                "%d: %.0f t placed of %.0f t published",
+                "%d: %.0f t placed of %.0f t published; H %.0f ha vs CDL %.0f ha (x%.3f)",
                 year,
                 grids["P"].sum(),
                 year_stats["production_t"].sum(),
+                grids["H"].sum(),
+                cdl_ha,
+                grids["H"].sum() / cdl_ha,
             )
             for name, grid in grids.items():
                 write(
