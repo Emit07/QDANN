@@ -94,20 +94,39 @@ def get_fips(row: dict[str, str]) -> str | None:
     return f"{int(row['state_fips_code']):02d}{int(county_ansi):03d}"
 
 
-def to_yield_t_ha(
+def get_asd(row: dict[str, str]) -> str | None:
+    """The record's agricultural district as "<state>-<asd_code>", or None without one."""
+    asd_code = row.get("asd_code", "").strip()
+    if not asd_code:
+        return None
+    return f"{int(row['state_fips_code']):02d}-{int(asd_code):02d}"
+
+
+def totals(
     area_rows: list[dict[str, str]],
     production_rows: list[dict[str, str]],
     crop: str,
 ) -> pandas.DataFrame:
-    """Reduce raw AREA HARVESTED and PRODUCTION records to one yield per (county, year)."""
-    totals: dict[tuple[str, int], list[float]] = collections.defaultdict(
+    """Harvested hectares and tonnes per published unit-year, plus each county's district.
+
+    A unit is a county (`fips`), or, for an OTHER (COMBINED) COUNTIES row, the agricultural
+    district whose withheld counties it pools (`fips` None). `asd` is "<state>-<asd_code>".
+    Only a unit-year with both halves published keeps a row. `districts` maps every county
+    any record names, including a suppressed one, to its district, so a withheld county can
+    still be pooled with its district's combined row.
+    """
+    sums: dict[tuple[str | None, str, int], list[float]] = collections.defaultdict(
         lambda: [0.0, 0.0]
     )
+    districts: dict[str, str] = {}
     for index, rows, unit_desc in ((0, area_rows, "ACRES"), (1, production_rows, "BU")):
         for row in rows:
             fips = get_fips(row)
+            asd = get_asd(row)
+            if fips is not None and asd is not None:
+                districts[fips] = asd
             if (
-                fips is None
+                (fips is None and asd is None)
                 or row["unit_desc"] != unit_desc
                 or row["class_desc"] != CROP_TO_CLASS_DESC[crop]
                 or row["util_practice_desc"] not in KEPT_UTIL_PRACTICE_DESCS
@@ -115,32 +134,55 @@ def to_yield_t_ha(
             ):
                 continue
             # published values carry thousands separators
-            totals[(fips, int(row["year"]))][index] += float(
+            sums[(fips, asd or "", int(row["year"]))][index] += float(
                 row["Value"].replace(",", "")
             )
 
-    lb_per_bushel = COMMODITY_TO_LB_PER_BUSHEL[CROP_TO_COMMODITY_DESC[crop]]
-    # a county-year keeps its label only where both halves of the ratio survived suppression:
+    t_per_bushel = (
+        COMMODITY_TO_LB_PER_BUSHEL[CROP_TO_COMMODITY_DESC[crop]] * KG_PER_LB / KG_PER_TONNE
+    )
     # bare area whose production is withheld would otherwise read as a yield of zero
-    return pandas.DataFrame.from_records(
+    ret = pandas.DataFrame.from_records(
         [
             {
                 "fips": fips,
+                "asd": asd or None,
                 "year": year,
-                "yield_t_ha": bushels
-                * lb_per_bushel
-                * KG_PER_LB
-                / (acres * HA_PER_ACRE * KG_PER_TONNE),
+                "area_ha": acres * HA_PER_ACRE,
+                "production_t": bushels * t_per_bushel,
             }
-            for (fips, year), (acres, bushels) in sorted(totals.items())
+            for (fips, asd, year), (acres, bushels) in sorted(
+                sums.items(), key=lambda kv: (kv[0][0] or "", kv[0][1], kv[0][2])
+            )
             if acres > 0 and bushels > 0
         ],
-        columns=["fips", "year", "yield_t_ha"],
+        columns=["fips", "asd", "year", "area_ha", "production_t"],
     )
+    ret.attrs["districts"] = districts
+    return ret
 
 
-def fetch(crop: str, years: range, state_fips: tuple[str, ...]) -> pandas.DataFrame:
-    """County-year yields for one crop, as columns fips / year / yield_t_ha."""
+def to_yield_t_ha(
+    area_rows: list[dict[str, str]],
+    production_rows: list[dict[str, str]],
+    crop: str,
+) -> pandas.DataFrame:
+    """Reduce raw AREA HARVESTED and PRODUCTION records to one yield per (county, year)."""
+    df = totals(area_rows=area_rows, production_rows=production_rows, crop=crop)
+    df = df[df["fips"].notna()]
+    return pandas.DataFrame(
+        {
+            "fips": df["fips"],
+            "year": df["year"],
+            "yield_t_ha": df["production_t"] / df["area_ha"],
+        }
+    ).reset_index(drop=True)
+
+
+def fetch_rows(
+    crop: str, years: range, state_fips: tuple[str, ...]
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    """The raw county-level AREA HARVESTED and PRODUCTION records for one crop."""
     common = (
         ("key", env.get("USDA_NASS_API_KEY")),
         ("source_desc", "SURVEY"),
@@ -164,6 +206,12 @@ def fetch(crop: str, years: range, state_fips: tuple[str, ...]) -> pandas.DataFr
     logger.info(
         f"{len(area_rows):d} area and {len(production_rows):d} production records"
     )
+    return area_rows, production_rows
+
+
+def fetch(crop: str, years: range, state_fips: tuple[str, ...]) -> pandas.DataFrame:
+    """County-year yields for one crop, as columns fips / year / yield_t_ha."""
+    area_rows, production_rows = fetch_rows(crop=crop, years=years, state_fips=state_fips)
     return to_yield_t_ha(
         area_rows=area_rows, production_rows=production_rows, crop=crop
     )
