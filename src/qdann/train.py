@@ -68,8 +68,14 @@ def fit(
     seed: int = 0,
     dropout: float = DROPOUT,
     interval_weight: float = 0.0,
+    source_years: torch.Tensor | None = None,
+    target_years: torch.Tensor | None = None,
 ) -> QDANN:
     """Train QDANN, or the same model with the adversarial branch switched off.
+
+    With `source_years` and `target_years` (one year per row), each source row is paired
+    with a target row of its own year, so G_d sees only the within-year aggregation gap
+    and not an uneven year mix (2012 is 0.4% of Iowa's target pixels).
 
     Both arms see the same mixed source-and-target batches, so BatchNorm statistics are
     identical and the only difference between them is the domain loss and the reversed
@@ -100,6 +106,7 @@ def fit(
     )
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, fused=True)
     weights = dict.fromkeys(QUANTILES, 1.0)
+    draw = None if source_years is None else same_year(source_years, target_years)
     logger.info(f"quantile weights before epoch {weight_update_at:d}: {_show(weights)}")
     for epoch in range(epochs):
         if quantile and epoch == weight_update_at:
@@ -118,7 +125,8 @@ def fit(
             if target_x is not None:
                 # one mixed batch, so the discriminator cannot separate the domains on
                 # per-domain normalization statistics (AMBIGUITIES.md #6)
-                x = torch.cat([x, target_x[torch.randint(len(target_x), (n,))]])
+                pick = torch.randint(len(target_x), (n,)) if draw is None else draw(batch)
+                x = torch.cat([x, target_x[pick]])
             yhat, logit, bounds = model(x)
             batch_weights = None if sample_weights is None else sample_weights[batch]
             loss = (
@@ -151,6 +159,16 @@ def fit(
             loss.backward()
             optimizer.step()
     return model.eval()
+
+
+def same_year(source_years: torch.Tensor, target_years: torch.Tensor):
+    """A function from source row indices to random target row indices of the same years."""
+    order = torch.argsort(target_years)
+    years, counts = torch.unique_consecutive(target_years[order], return_counts=True)
+    at = torch.searchsorted(years, source_years).clamp(max=len(years) - 1)
+    assert (years[at] == source_years).all(), "a source year has no target rows"
+    start, count = (torch.cumsum(counts, 0) - counts)[at], counts[at]
+    return lambda batch: order[start[batch] + (torch.rand(len(batch)) * count[batch]).long()]
 
 
 def r_squared(y: torch.Tensor, yhat: torch.Tensor) -> float:

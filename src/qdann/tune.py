@@ -88,12 +88,14 @@ def save(
     vae_filter: bool = False,
     seed: int = 0,
     name: str | None = None,
+    match_years: bool = False,
 ) -> pathlib.Path:
     """Every county, with the scalers `predict` will need to apply it to pixels.
 
     With `target`, its pixels are mixed into training and `adversarial` / `vae_filter`
     pick the arm, as in `train.evaluate`; `name` then keeps the arm's weights apart from
-    the shipped `qdann_<crop>.pt`."""
+    the shipped `qdann_<crop>.pt`. `match_years` pairs each county-year with target pixels
+    of its own year (`train.fit`)."""
     features = train.feature_columns(table)
     x, *rest = train.standardize(
         table, *([] if target is None else [target]), columns=features
@@ -101,15 +103,18 @@ def save(
     y = torch.tensor(table[weather.LABEL_COLUMN].to_numpy(), dtype=torch.float32)
     mean, std = float(y.mean()), float(y.std())
     y, weights = (y - mean) / std, None
+    years = torch.tensor(table["year"].to_numpy())
     if vae_filter:
         keep, weights = train.vae_weights(x, rest[0], epochs=epochs, seed=seed, crop=crop)
-        x, y = x[keep], y[keep]
+        x, y, years = x[keep], y[keep], years[keep]
     model = train.fit(
         source_x=x,
         source_y=y,
         target_x=rest[0] if rest else None,
         sample_weights=weights,
         adversarial=adversarial,
+        source_years=years if match_years else None,
+        target_years=torch.tensor(target["year"].to_numpy()) if match_years else None,
         epochs=epochs,
         seed=seed,
         dropout=dropout,

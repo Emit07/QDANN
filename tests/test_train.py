@@ -230,3 +230,15 @@ def test_conformal_widens_an_interval_that_undercovers():
     y_noisy = y + torch.randn(200, generator=torch.Generator().manual_seed(0))
     out = train.conformal(y=y_noisy, lo=y - 0.01, hi=y + 0.01, calibrate=calibrate)
     assert out["raw_coverage"] < 0.1 and abs(out["coverage"] - 0.8) < 0.1
+
+
+def test_same_year_draws_only_that_years_target_rows():
+    source_years = torch.tensor([2012, 2008, 2012, 2018, 2008])
+    target_years = torch.tensor([2018, 2008, 2012, 2008, 2018, 2018])
+    draw = train.same_year(source_years, target_years)
+    batch = torch.arange(5).repeat(200)
+    assert (target_years[draw(batch)] == source_years[batch]).all()
+    # both 2008 target rows get drawn, not just the first
+    assert set(draw(torch.tensor([1] * 200)).tolist()) == {1, 3}
+    with pytest.raises(AssertionError):
+        train.same_year(torch.tensor([2010]), target_years)

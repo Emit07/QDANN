@@ -640,3 +640,46 @@ on the uncertainty, not a calibrated interval. A 5' cell averages hundreds of pi
 interval is closer to the county scale the margin was fitted on.
 
 `implementation_choice`
+
+## 27. Source and target harmonics must come from the same reader
+
+**Paper.** §2.2 builds the county and subfield features with one Earth Engine recipe. It
+never has two readers to reconcile.
+
+**Problem.** Here the county table `source_maize.parquet` came from Earth Engine (with #20's
+slivers), and the target pixels and `predict`'s pixels come from MPC. On the same county-years,
+the two readers' harmonics correlate only 0.67–0.93 per coefficient, and the MPC `c` sits
+0.39 source-SD higher. A model trained on the GEE table and applied to MPC pixels pays twice:
+- regression dilution: the noisier training features weaken the learned harmonic weights,
+  so the pixel map is too flat;
+- a manufactured marginal shift, which the adversarial branch then spends itself aligning.
+
+A second, separate gap is in the target's year mix: the 20-date floor (#18) leaves 2012
+(Landsat 7 SLC-off only) at 101 of 28,388 target pixels (0.4%). G_d can then tell the domains
+apart on drought weather alone, which no aggregation explains.
+
+**Choice.** Train on MPC county harmonics (`data/mpc/19/gcvi_mpc_maize.parquet`) joined to the
+same weather and labels, so county, target and inference pixels share one reader and one
+cloud mask. For the year mix, `train.fit(source_years=, target_years=)` pairs each county-year
+with target pixels of its own year (`train.same_year`); resampling the target to the source's
+year shares is the cruder alternative.
+
+**Measured** (2026-11-25, 3 seeds [min–max], Step 5d in `notes/yield_layer_plan.md`).
+Against Ma et al.'s 30 m map, within county:
+- Flatness, robustly fixed: the plain head's SD ratio goes from 0.69 [0.67–0.71] to
+  0.96 [0.86–1.03].
+- Pattern r: 0.77 → 0.80 pooled. The gain is clear in 2018 (0.79 → 0.83, no seed overlap)
+  and a tie in 2016 (0.75 both).
+- Full QDANN: 0.68 → 0.77.
+- Same-year pairing adds nothing over resampling (0.76 against 0.77).
+
+The unseen-year check goes the other way. With 2016's labels held out, the MPC head scores
+0.69 [0.63–0.76] against the GEE head's 0.80 [0.79–0.80], and its level is further below
+NASS (−0.47 against −0.19 t/ha). That is nine counties and one year. At county scale over all 11
+years (`data/stage1/loyo_mpc.json`) the two tie: leave-one-year-out within-year R² is 0.133
+against 0.140, and MPC has the lower RMSE in 7 of 11 years, 2016 included.
+
+**Impact if wrong.** Large and silent: both readers' features are finite and plausible, and
+the only symptoms are a flat map and a DA arm that underperforms.
+
+`implementation_choice` -- measured
