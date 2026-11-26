@@ -1,6 +1,6 @@
 """Stage 0 of notes/yield_layer_plan.md: pick the head's dropout and epochs, then score it.
 
-  uv run python -m qdann.tune --crop maize
+  uv run python -m qdann.tune --crop maize --source data/source_mpc_maize.parquet
 
 1. Grid over dropout x epochs on an inner split of each fold's training counties, so the
    held-out counties play no part in the choice. (0.5, 1000) is today's setting, for
@@ -22,6 +22,7 @@ import json
 import os
 import pathlib
 import statistics
+import subprocess
 
 import torch
 
@@ -63,14 +64,33 @@ def _run(table, jobs: list[dict], done: dict, log: pathlib.Path) -> None:
 
 
 def _key(job: dict) -> str:
-    return json.dumps({k: job[k] for k in ("kind", "seed", "dropout", "epochs", "extra")})
+    # the source table's sha256 is part of the key: a cached result for another table
+    # must not be reused (lines written before it was keyed have none, and never match)
+    keys = ("kind", "seed", "dropout", "epochs", "extra", "source")
+    return json.dumps({k: job.get(k) for k in keys})
 
 
-def _jobs(kind: str, dropout: float, epochs: int, **extra) -> list[dict]:
+def _jobs(table, kind: str, dropout: float, epochs: int, **extra) -> list[dict]:
+    source = table.attrs["source"]["sha256"]
     return [
-        {"kind": kind, "seed": s, "dropout": dropout, "epochs": epochs, "extra": extra}
+        {"kind": kind, "seed": s, "dropout": dropout, "epochs": epochs, "extra": extra,
+         "source": source}
         for s in SEEDS
     ]
+
+
+def provenance(*tables) -> dict:
+    """The code version and the input files behind an artifact: git commit, whether the
+    tree had uncommitted changes, and each table's `weather.read` path and sha256."""
+    git = lambda *a: subprocess.run(  # noqa: E731
+        ["git", *a], capture_output=True, text=True, check=True,
+        cwd=pathlib.Path(__file__).parent,
+    ).stdout.strip()
+    return {
+        "git_commit": git("rev-parse", "HEAD"),
+        "git_dirty": bool(git("status", "--porcelain", "--untracked-files=no")),
+        "inputs": [t.attrs.get("source", "unknown: not read with weather.read") for t in tables],
+    }
 
 
 def _mean(done: dict, jobs: list[dict], metric: str) -> float:
@@ -89,13 +109,22 @@ def save(
     seed: int = 0,
     name: str | None = None,
     match_years: bool = False,
+    overwrite: bool = False,
 ) -> pathlib.Path:
     """Every county, with the scalers `predict` will need to apply it to pixels.
 
     With `target`, its pixels are mixed into training and `adversarial` / `vae_filter`
     pick the arm, as in `train.evaluate`; `name` then keeps the arm's weights apart from
     the shipped `qdann_<crop>.pt`. `match_years` pairs each county-year with target pixels
-    of its own year (`train.fit`)."""
+    of its own year (`train.fit`).
+
+    Refuses to replace an existing checkpoint unless `overwrite`: the default name is the
+    shipped model. Writes `provenance` into the checkpoint and a `.json` beside it."""
+    path = weather.DATA_DIR / "models" / (
+        f"qdann_{crop}.pt" if name is None else f"qdann_{crop}_{name}.pt"
+    )
+    if path.exists() and not overwrite:
+        raise FileExistsError(f"{path} exists; pass overwrite=True to replace it")
     features = train.feature_columns(table)
     x, *rest = train.standardize(
         table, *([] if target is None else [target]), columns=features
@@ -120,10 +149,12 @@ def save(
         dropout=dropout,
         interval_weight=1.0,
     )
-    path = weather.DATA_DIR / "models" / (
-        f"qdann_{crop}.pt" if name is None else f"qdann_{crop}_{name}.pt"
-    )
     path.parent.mkdir(exist_ok=True)
+    meta = {
+        "provenance": provenance(table, *([] if target is None else [target])),
+        "arm": {"adversarial": adversarial, "vae_filter": vae_filter, "seed": seed,
+                "match_years": match_years},
+    }
     torch.save(
         {
             "state_dict": model.state_dict(),
@@ -137,9 +168,11 @@ def save(
             # t/ha added to each side of [min(q10, point), max(q90, point)], the mean of
             # the held-out folds' conformal margins: county-scale, 80% nominal
             "conformal_margin": margin,
+            **meta,
         },
         path,
     )
+    path.with_suffix(".json").write_text(json.dumps(meta, indent=2))
     return path
 
 
@@ -151,8 +184,17 @@ def main() -> int:
     parser.add_argument(
         "--scale", type=float, default=1.0, help="multiply every epoch count (smoke test)"
     )
+    # no default: source_<crop>.parquet is the Earth Engine table, and the shipped model
+    # is trained on the MPC one (AMBIGUITIES #27)
+    parser.add_argument("--source", type=pathlib.Path, required=True, help="source table")
+    parser.add_argument(
+        "--overwrite", action="store_true", help="replace data/models/qdann_<crop>.pt"
+    )
     args = parser.parse_args()
-    table = weather.read(weather.DATA_DIR / f"source_{args.crop}.parquet")
+    table = weather.read(args.source)
+    shipped = weather.DATA_DIR / "models" / f"qdann_{args.crop}.pt"
+    if shipped.exists() and not args.overwrite:
+        parser.error(f"{shipped} exists; pass --overwrite to replace it at the end")
     log = weather.DATA_DIR / f"tune_{args.crop}.jsonl"
     done = {}
     if log.exists():
@@ -162,7 +204,7 @@ def main() -> int:
     grid = [(d, max(2, round(e * args.scale))) for d, e in GRID]
 
     print("\n== 1. grid on the inner split", flush=True)
-    inner = {g: _jobs("qdann", *g, inner=True) for g in grid}
+    inner = {g: _jobs(table, "qdann", *g, inner=True) for g in grid}
     _run(table, [j for jobs in inner.values() for j in jobs], done, log)
     rows = {g: {m: _mean(done, jobs, m) for m in ("r2", "within_year_r2")} for g, jobs in inner.items()}
     for (d, e), row in rows.items():
@@ -171,11 +213,11 @@ def main() -> int:
     print(f"chosen: dropout {dropout} epochs {epochs}", flush=True)
 
     print("\n== 2-4. held-out folds, leave-one-year-out, baselines", flush=True)
-    final = _jobs("qdann", dropout, epochs, interval_weight=1.0)
-    point = _jobs("qdann", dropout, epochs)
+    final = _jobs(table, "qdann", dropout, epochs, interval_weight=1.0)
+    point = _jobs(table, "qdann", dropout, epochs)
     years = sorted(table["year"].unique().tolist())
-    loyo = {y: _jobs("qdann", dropout, epochs, holdout_year=y) for y in years}
-    base = _jobs("baselines", dropout, epochs)
+    loyo = {y: _jobs(table, "qdann", dropout, epochs, holdout_year=y) for y in years}
+    base = _jobs(table, "baselines", dropout, epochs)
     _run(table, final + point + [j for js in loyo.values() for j in js] + base, done, log)
 
     summary = {
@@ -208,7 +250,10 @@ def main() -> int:
         for name in ("ridge", "random_forest", "dnn")
     }
     margin = summary["with_intervals"]["conformal_margin"]
-    summary["model_path"] = str(save(table, args.crop, dropout, epochs, margin))
+    summary["provenance"] = provenance(table)
+    summary["model_path"] = str(
+        save(table, args.crop, dropout, epochs, margin, overwrite=args.overwrite)
+    )
     out = weather.DATA_DIR / f"tune_{args.crop}.json"
     out.write_text(json.dumps(summary, indent=2, default=float))
     print(json.dumps(summary, indent=2, default=float))

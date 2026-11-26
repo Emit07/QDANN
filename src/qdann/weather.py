@@ -13,6 +13,7 @@ the two earlier legs writes.
 
 import argparse
 import calendar
+import hashlib
 import logging
 import math
 import pathlib
@@ -231,9 +232,18 @@ def join(
 
 
 def read(path: pathlib.Path) -> pandas.DataFrame:
+    """The parquet at `path`, with `attrs["source"]` naming the file and its sha256 so a
+    model trained on it can say which table it came from (AMBIGUITIES #27). pandas 3 keeps
+    attrs through filtering and column selection, but merge or concat with an unstamped
+    frame drops them: re-stamp after combining tables."""
     if not path.exists():
         raise SystemExit(f"{path} is missing; run the leg that writes it first")
-    return pandas.read_parquet(path).astype({"fips": str})
+    table = pandas.read_parquet(path).astype({"fips": str})
+    table.attrs["source"] = {
+        "path": str(path),
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+    }
+    return table
 
 
 def main() -> int:

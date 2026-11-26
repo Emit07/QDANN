@@ -9,8 +9,11 @@ wheels/
 # Virtual environments
 .venv
 
-# Data and artifacts
-data/
+# Data and artifacts; driver scripts under data/ are tracked
+data/**
+!data/**/
+!data/**/*.py
+!data/**/*.sh
 *.parquet
 *.csv
 *.pt

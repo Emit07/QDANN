@@ -52,13 +52,36 @@ CHUNK = 100_000
 MIN_OBSERVATIONS = 15
 
 
-def load(crop: str, path: pathlib.Path | None = None) -> tuple[QDANN, dict]:
-    """The shipped data/models/qdann_<crop>.pt, or another `tune.save` file at `path`."""
+def load(
+    crop: str, path: pathlib.Path | None = None, check: bool = True
+) -> tuple[QDANN, dict]:
+    """The shipped data/models/qdann_<crop>.pt, or another `tune.save` file at `path`.
+
+    `check` refuses a model trained on a non-MPC table (`check_reader`); pass False only
+    to load a GEE-trained arm on purpose, for comparison."""
     path = weather.DATA_DIR / "models" / f"qdann_{crop}.pt" if path is None else path
     saved = torch.load(path, weights_only=False)
     model = QDANN(len(saved["features"]), dropout=saved["dropout"], intervals=True)
     model.load_state_dict(saved["state_dict"])
+    logger.info("%s: %s", path.name, saved.get("provenance", "no provenance recorded"))
+    if check:
+        check_reader(saved)
     return model.eval(), saved
+
+
+def check_reader(saved: dict) -> None:
+    """The pixels here come from MPC, so the model's county table must too: a GEE-trained
+    head on MPC pixels is silently flat (AMBIGUITIES #27). Checkpoints saved before
+    `tune.save` recorded provenance pass with a warning."""
+    inputs = saved.get("provenance", {}).get("inputs") or [None]
+    if not isinstance(inputs[0], dict):
+        logger.warning("checkpoint records no source table; cannot confirm it is MPC")
+        return
+    # ponytail: a filename tripwire, not identity; compare sha256 against the MPC table
+    # if renamed copies ever appear
+    name = pathlib.Path(inputs[0]["path"]).name
+    if "mpc" not in name:
+        raise SystemExit(f"model was trained on {name}, not an MPC source table (AMBIGUITIES #27)")
 
 
 def pixel_harmonics(pixels: mpc.Pixels, crop: str, year: int) -> numpy.ndarray:

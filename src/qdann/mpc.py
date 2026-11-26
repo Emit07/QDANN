@@ -208,12 +208,17 @@ def cdl_tiles(year: int, region: shapely.Geometry) -> list:
             .items()
         )
 
-    return [
+    ret = [
         item
         for item in retry(search)
         if item.id.startswith(f"cropland_{year}_")
         and shapely.geometry.shape(item.geometry).intersects(region)
     ]
+    # an empty list would give every county an empty crop mask, silently: MPC's CDL
+    # stops at 2021
+    if not ret:
+        raise ValueError(f"no CDL tiles on MPC for {year} over this region")
+    return ret
 
 
 def utm(polygon: shapely.Geometry) -> pyproj.CRS:
