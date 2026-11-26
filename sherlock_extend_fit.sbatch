@@ -23,7 +23,7 @@
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
 python="apptainer exec py.sif .venv/bin/python"
-L7_LAST=${L7_LAST:?export L7_LAST as for sherlock_extend.sbatch}
+L7_LAST=${L7_LAST:-2021}  # as in sherlock_extend.sbatch
 reads="$SCRATCH/qdann/mpc_ext_l7_$L7_LAST/19"
 table=data/source_mpc_maize_2008_2023_l7_$L7_LAST.parquet
 # tune records the git commit; fail now, not after hours, if the container can't see it

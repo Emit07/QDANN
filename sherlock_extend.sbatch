@@ -18,10 +18,9 @@
 #   scp data/extend/{nass,gridmet}_maize_2019_2023.parquet sherlock:<repo>/data/extend/
 #   scp data/cdl/CDL_202{2,3}_19.tif sherlock:<repo>/data/cdl/
 #
-# Landsat 7 (AMBIGUITIES #30) must be chosen before the read: on shared dates its pixels are
-# mosaicked with Landsat 8/9's, so it can't be dropped afterwards. Both jobs need it:
-#   export L7_LAST=2021   # leave Landsat 7 out from 2022 (recommended), or
-#   export L7_LAST=all    # keep it every year (the paper's reader)
+# Landsat 7 is left out from 2022 (AMBIGUITIES #30, Ale 2026-11-26). It must be chosen
+# before the read, as on shared dates its pixels are mosaicked with Landsat 8/9's. To keep
+# it (the paper's reader), `export L7_LAST=all` before both sbatch calls.
 #   mkdir -p logs && jid=$(sbatch --parsable sherlock_extend.sbatch)
 #   sbatch --dependency=afterok:$jid sherlock_extend_fit.sbatch
 #
@@ -38,7 +37,7 @@
 
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
-L7_LAST=${L7_LAST:?export L7_LAST=2021 or L7_LAST=all first (AMBIGUITIES #30)}
+L7_LAST=${L7_LAST:-2021}
 # the choice names the directory, so skip-if-exists never reuses reads made under the other
 out="$SCRATCH/qdann/mpc_ext_l7_$L7_LAST/19"
 python="apptainer exec py.sif .venv/bin/python"

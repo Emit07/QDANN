@@ -751,12 +751,13 @@ yield. On shared dates (6 in 2023 at Story) its pixels are mosaicked with OLI's,
 cannot be removed after the read.
 
 **Choice.** `mpc.scenes(landsat7_last=)` / `mpc --landsat7-last YEAR` leave Landsat 7 out
-after YEAR; the default keeps it (the paper's reader, and every table built before
-2026-11-26). `sherlock_extend.sbatch` refuses to start until `L7_LAST` is set, and the
-choice names the reads directory, the table and the model. Recommended: `L7_LAST=2021`.
+after YEAR; the module default keeps it (the paper's reader, and every table built before
+2026-11-26). In `sherlock_extend.sbatch` `L7_LAST` defaults to 2021, and the
+choice names the reads directory, the table and the model. **Decided (Ale, 2026-11-26):
+leave Landsat 7 out from 2022, `L7_LAST=2021`, the scripts' default.**
 2022–2023 keep 60–70 Landsat 8/9 scenes a year, more than any year before.
 
 **Not yet measured.** The GCVI offset on near-paired Landsat 7 / OLI dates. Measure it on
 the 2019–2021 reads, which keep Landsat 7 under either choice.
 
-`open` -- Ale's call
+`departure` -- decided by Ale
