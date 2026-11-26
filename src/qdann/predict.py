@@ -15,6 +15,8 @@ twenty weather features (`weather.cell_means`); the saved Stage 0 model
   qdann_<year>_{H,cov,Ylo,Yhi}_<SPAM>.tif  area and coverage as `export`; the cell's mean
                                    pixel interval, t/ha
   predict_<crop>_<year>.json       per county: mean q50 vs NASS, coverage, time, memory, bytes
+  <fips>/features_<crop>_<year>.npz  the 27 features per crop pixel and the grid
+                                   (`save_features`), so other weights apply offline
 
 lo/hi carry the county-scale conformal margin from `tune`; at a pixel they are wider in
 truth, so Ylo/Yhi are a floor on the uncertainty, not a calibrated interval. A pixel with
@@ -34,6 +36,7 @@ import pyproj
 import rasterio
 import shapely
 import torch
+from rasterio.transform import Affine
 
 from qdann import export, gee, harmonics, mpc, nass, target, weather
 from qdann.model import QDANN
@@ -44,10 +47,10 @@ logger = logging.getLogger(__name__)
 CHUNK = 100_000
 
 
-def load(crop: str) -> tuple[QDANN, dict]:
-    saved = torch.load(
-        weather.DATA_DIR / "models" / f"qdann_{crop}.pt", weights_only=False
-    )
+def load(crop: str, path: pathlib.Path | None = None) -> tuple[QDANN, dict]:
+    """The shipped data/models/qdann_<crop>.pt, or another `tune.save` file at `path`."""
+    path = weather.DATA_DIR / "models" / f"qdann_{crop}.pt" if path is None else path
+    saved = torch.load(path, weights_only=False)
     model = QDANN(len(saved["features"]), dropout=saved["dropout"], intervals=True)
     model.load_state_dict(saved["state_dict"])
     return model.eval(), saved
@@ -97,6 +100,35 @@ def apply(
     out[1, ok] = numpy.minimum(q10, q50) - margin
     out[2, ok] = numpy.maximum(q90, q50) + margin
     return out[0], out[1], out[2]
+
+
+def save_features(
+    features: pandas.DataFrame, pixels: mpc.Pixels, path: pathlib.Path
+) -> None:
+    """~80 MB per county-year: float32 features in the order of `pixels.crop`'s True
+    cells, the mask, and the grid it lies on."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    numpy.savez(
+        path,
+        features=features.to_numpy(numpy.float32),
+        columns=numpy.array(features.columns, dtype=str),
+        crop=pixels.crop,
+        transform=numpy.array(tuple(pixels.on.transform)[:6]),
+        crs=pixels.on.crs.to_wkt(),
+    )
+
+
+def load_features(path: pathlib.Path) -> tuple[pandas.DataFrame, numpy.ndarray, mpc.Grid]:
+    """`save_features`'s features, crop mask and grid."""
+    with numpy.load(path) as f:
+        crop = f["crop"]
+        grid = mpc.Grid(
+            crs=pyproj.CRS.from_wkt(str(f["crs"])),
+            transform=Affine(*f["transform"]),
+            width=crop.shape[1],
+            height=crop.shape[0],
+        )
+        return pandas.DataFrame(f["features"], columns=f["columns"].tolist()), crop, grid
 
 
 def write_cog(bands: numpy.ndarray, pixels: mpc.Pixels, path: pathlib.Path) -> None:
@@ -205,6 +237,11 @@ def main() -> int:
             pixel_harmonics(pixels, crop=args.crop, year=args.year),
             columns=list(weather.HARMONIC_COLUMNS),
         ).join(cells.at(*lonlat(pixels)))
+        save_features(
+            features[saved["features"]],
+            pixels,
+            args.out / fips / f"features_{args.crop}_{args.year}.npz",
+        )
         q50, lo, hi = apply(model, saved, features)
         write_cog(
             numpy.stack([q50, lo, hi]),

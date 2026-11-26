@@ -331,6 +331,17 @@ def jdluc_yields(
     ).set_index(["admin_level", "admin_id", "jurisdiction_name", "crop_name", "year"])
 
 
+def vae_weights(
+    source_x: torch.Tensor, target_x: torch.Tensor, epochs: int, seed: int, crop: str
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Section 3.2: a VAE fitted on the target keeps the source rows it can reconstruct;
+    returns that mask and the survivors' 1/L_i weights."""
+    errors = vae.reconstruction_error(vae.fit(target_x, epochs=epochs, seed=seed), source_x)
+    keep = errors <= vae.filter_threshold(errors, crop)
+    logger.info(f"VAE filter keeps {int(keep.sum()):d} of {len(keep):d} source rows")
+    return keep, 1.0 / errors[keep]
+
+
 def evaluate(
     table: pandas.DataFrame,
     epochs: int,
@@ -402,17 +413,12 @@ def evaluate(
         assert rest and crop is not None, (
             "the VAE filter needs a target domain and a crop"
         )
-        errors = vae.reconstruction_error(
-            vae.fit(rest[0], epochs=epochs, seed=seed), train_x
-        )
-        keep = errors <= vae.filter_threshold(errors, crop)
-        logger.info(
-            f"VAE filter keeps {int(keep.sum()):d} of {len(keep):d} source rows"
+        keep, sample_weights = vae_weights(
+            train_x, rest[0], epochs=epochs, seed=seed, crop=crop
         )
         # `fit` shuffles the tensors it is handed, so filtering all three together here
         # keeps the weights aligned with the rows they belong to
         train_x, train_y_std = train_x[keep], train_y_std[keep]
-        sample_weights = 1.0 / errors[keep]
 
     model = fit(
         source_x=train_x,

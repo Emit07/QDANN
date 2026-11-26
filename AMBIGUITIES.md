@@ -596,8 +596,8 @@ paper's setting.
 
 **Impact if wrong.** Results are no longer a strict reproduction of the paper's configuration.
 With less dropout the head may overfit more where training data are thin. A full 0.5-vs-0.1
-comparison (held-out, leave-one-year-out, ablation, target transfer) is planned once the Stage 1
-full target exists.
+comparison was considered and dropped (2026-11-25): the inner grid already scores 0.5 at 0.474
+against 0.86-0.87, and `--dropout 0.5` stays available if a later stage needs it.
 
 `implementation_choice`
 

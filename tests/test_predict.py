@@ -74,3 +74,15 @@ def test_anchored_keeps_nass_per_county_and_raw_scales_area_by_yield():
     numpy.testing.assert_allclose(raw[cell["19169"]], 100.0 * 12.0)
     numpy.testing.assert_allclose(raw[cell["19155"]], 50.0 * 9.0)
     numpy.testing.assert_allclose(grids["Ylo"].ravel()[cell["19155"]], 8.0)
+
+
+def test_features_round_trip_with_their_grid(tmp_path):
+    pixels = _pixels(-93.62, 42.03, 3)
+    pixels.crop[0, 1] = False
+    features = pandas.DataFrame({"a": numpy.arange(8.0), "b": numpy.nan})
+    path = tmp_path / "f.npz"
+    predict.save_features(features, pixels, path)
+    got, crop, grid = predict.load_features(path)
+    pandas.testing.assert_frame_equal(got, features.astype("float32"))
+    assert (crop == pixels.crop).all()
+    assert grid == pixels.on

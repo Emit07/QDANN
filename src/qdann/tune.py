@@ -77,20 +77,47 @@ def _mean(done: dict, jobs: list[dict], metric: str) -> float:
     return statistics.mean(done[_key(job)]["result"][metric] for job in jobs)
 
 
-def save(table, crop: str, dropout: float, epochs: int, margin: float) -> pathlib.Path:
-    """Every county, with the scalers `predict` will need to apply it to pixels."""
+def save(
+    table,
+    crop: str,
+    dropout: float,
+    epochs: int,
+    margin: float,
+    target=None,
+    adversarial: bool = False,
+    vae_filter: bool = False,
+    seed: int = 0,
+    name: str | None = None,
+) -> pathlib.Path:
+    """Every county, with the scalers `predict` will need to apply it to pixels.
+
+    With `target`, its pixels are mixed into training and `adversarial` / `vae_filter`
+    pick the arm, as in `train.evaluate`; `name` then keeps the arm's weights apart from
+    the shipped `qdann_<crop>.pt`."""
     features = train.feature_columns(table)
-    (x,) = train.standardize(table, columns=features)
+    x, *rest = train.standardize(
+        table, *([] if target is None else [target]), columns=features
+    )
     y = torch.tensor(table[weather.LABEL_COLUMN].to_numpy(), dtype=torch.float32)
     mean, std = float(y.mean()), float(y.std())
+    y, weights = (y - mean) / std, None
+    if vae_filter:
+        keep, weights = train.vae_weights(x, rest[0], epochs=epochs, seed=seed, crop=crop)
+        x, y = x[keep], y[keep]
     model = train.fit(
         source_x=x,
-        source_y=(y - mean) / std,
+        source_y=y,
+        target_x=rest[0] if rest else None,
+        sample_weights=weights,
+        adversarial=adversarial,
         epochs=epochs,
+        seed=seed,
         dropout=dropout,
         interval_weight=1.0,
     )
-    path = weather.DATA_DIR / "models" / f"qdann_{crop}.pt"
+    path = weather.DATA_DIR / "models" / (
+        f"qdann_{crop}.pt" if name is None else f"qdann_{crop}_{name}.pt"
+    )
     path.parent.mkdir(exist_ok=True)
     torch.save(
         {
