@@ -3,7 +3,7 @@
   uv run python -m qdann.predict --crop maize --year 2018 --county 19169 19015
 
 One MPC pass reads every crop pixel's Landsat series (`mpc.county_means(full=True)`); Eq. 2
-is fit per pixel under the target's observation floor; each pixel takes its gridMET cell's
+is fit per pixel above `MIN_OBSERVATIONS` clear dates (15, AMBIGUITIES #28); each pixel takes its gridMET cell's
 twenty weather features (`weather.cell_means`); the saved Stage 0 model
 (data/models/qdann_<crop>.pt) gives q50 and the q10/q90 interval. Writes under --out:
 
@@ -20,7 +20,9 @@ twenty weather features (`weather.cell_means`); the saved Stage 0 model
 
 lo/hi carry the county-scale conformal margin from `tune`; at a pixel they are wider in
 truth, so Ylo/Yhi are a floor on the uncertainty, not a calibrated interval. A pixel with
-no prediction takes its county's mean prediction in the 5' products.
+no prediction stays NaN in the COG and takes the county-feature prediction in the 5'
+products: the same model on the county's mean series, as the source table is built
+(`county_inputs`).
 """
 
 import argparse
@@ -38,13 +40,16 @@ import shapely
 import torch
 from rasterio.transform import Affine
 
-from qdann import export, gee, harmonics, mpc, nass, target, weather
+from qdann import export, gee, harmonics, mpc, nass, weather
 from qdann.model import QDANN
 
 logger = logging.getLogger(__name__)
 
 # pixels per Eq. 2 solve: bounds the (pixels, dates) float64 GCVI copy and the 7x7 stacks
 CHUNK = 100_000
+# a pixel's clear-date floor, lowered from the target's 20 on 2026-11-26 (AMBIGUITIES #28):
+# 15-20 dates agree with Ma et al. nearly as well as 20+, below 12 the fit degrades fast
+MIN_OBSERVATIONS = 15
 
 
 def load(crop: str, path: pathlib.Path | None = None) -> tuple[QDANN, dict]:
@@ -67,7 +72,7 @@ def pixel_harmonics(pixels: mpc.Pixels, crop: str, year: int) -> numpy.ndarray:
             # Eq. 1, NaN where gee.clean would drop the date
             gcvi = numpy.where(green > gee.MIN_GREEN_REFLECTANCE, nir / green - 1, numpy.nan)
         ret[i : i + CHUNK] = harmonics.fit_many(
-            t=t, y=gcvi, min_observations=target.MIN_OBSERVATIONS
+            t=t, y=gcvi, min_observations=MIN_OBSERVATIONS
         )
     return ret
 
@@ -100,6 +105,14 @@ def apply(
     out[1, ok] = numpy.minimum(q10, q50) - margin
     out[2, ok] = numpy.maximum(q90, q50) + margin
     return out[0], out[1], out[2]
+
+
+def county_inputs(long: pandas.DataFrame, crop: str) -> pandas.DataFrame:
+    """Eq. 2 on each county's mean series, by fips, as `mpc.fit` builds the source table
+    (sliver dates dropped, the rank floor)."""
+    long = long[long["n_clear"] >= mpc.SLIVER * long["n_crop"]]
+    fitted = gee.fit_table(long=gee.clean(long), crop=crop)
+    return fitted.set_index("fips")[list(weather.HARMONIC_COLUMNS)]
 
 
 def save_features(
@@ -231,6 +244,7 @@ def main() -> int:
     labels = weather.read(weather.DATA_DIR / f"nass_{args.crop}.parquet")
     labels = labels[labels["year"] == args.year].set_index("fips")[weather.LABEL_COLUMN]
     report, county = {}, {}
+    county_harmonics = county_inputs(long, crop=args.crop)
     for fips, pixels in series.items():
         t0 = time.monotonic()
         features = pandas.DataFrame(
@@ -248,11 +262,24 @@ def main() -> int:
             pixels,
             args.out / fips / f"qdann_{args.crop}_{args.year}.tif",
         )
-        county[fips] = (pixels, q50, lo, hi)
+        # the county row's weather is the mean over its crop pixels, against the source
+        # table's mean over gridMET cells (weather.county_means): near equal in crop counties
+        row = county_harmonics.loc[[fips]].reset_index(drop=True).join(
+            features[list(weather.weather_columns(args.crop))].mean().to_frame().T
+        )
+        fill = [v[0] for v in apply(model, saved, row)]
+        if numpy.isnan(fill[0]):
+            fill = [numpy.nanmean(v) for v in (q50, lo, hi)]
+        county[fips] = (
+            pixels,
+            *(numpy.where(numpy.isfinite(v), v, f) for v, f in zip((q50, lo, hi), fill)),
+        )
         report[fips] = {
             "crop_pixels": len(q50),
             "predicted_share": float(numpy.isfinite(q50).mean()),
             "mean_q50": float(numpy.nanmean(q50)),
+            "county_q50": float(fill[0]),
+            "filled_mean_q50": float(county[fips][1].mean()),
             "nass_yield": float(labels.get(fips, numpy.nan)),
             "pixel_sd_q50": float(numpy.nanstd(q50)),
             "mean_interval_width": float(numpy.nanmean(hi - lo)),

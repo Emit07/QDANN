@@ -33,14 +33,30 @@ def test_pixel_harmonics_recover_eq_2_and_floor_cloudy_pixels():
     pixels = _pixels(-93.62, 42.03, 2, dates=numpy.array(dates))
     pixels.green[:] = 0.1
     pixels.nir[:] = 0.1 * (gcvi + 1)
-    # pixel 1 under cloud on all but 19 dates: under the target floor of 20
-    pixels.green[1, 19:] = numpy.nan
+    # pixel 1 under cloud on all but 14 dates: under the pixel floor of 15 (#28)
+    pixels.green[1, 14:] = numpy.nan
     # pixel 2 with a dark date gee.clean drops, still 39 dates
     pixels.green[2, 0] = 0.005
+    # pixel 3 on 16 dates: under the target's 20, above the pixel floor
+    pixels.green[3, 16:] = numpy.nan
     got = predict.pixel_harmonics(pixels, crop="maize", year=2018)
-    assert target.MIN_OBSERVATIONS == 20
-    numpy.testing.assert_allclose(got[[0, 2, 3]], numpy.tile(coefficients, (3, 1)), atol=1e-5)
+    assert predict.MIN_OBSERVATIONS == 15 and target.MIN_OBSERVATIONS == 20
+    # float32 reflectance, and pixel 3's dates all fall early in the season
+    numpy.testing.assert_allclose(got[[0, 2, 3]], numpy.tile(coefficients, (3, 1)), atol=1e-4)
     assert numpy.isnan(got[1]).all()
+
+
+def test_county_inputs_fit_the_county_mean_series_without_sliver_dates():
+    dates = pandas.date_range("2018-04-01", "2018-10-31", periods=30).strftime("%Y-%m-%d")
+    t = gee.normalized_time(pandas.Series(dates), crop="maize", year=2018).to_numpy()
+    coefficients = numpy.array([3.0, -1.0, 0.5, 0.2, -0.1, 0.05, 0.02])
+    gcvi = harmonics.design(t) @ coefficients
+    long = pandas.DataFrame({"fips": "19169", "year": 2018, "date": dates, "green": 0.1,
+                             "nir": 0.1 * (gcvi + 1), "n_clear": 1000, "n_crop": 1000})
+    # a sliver date with a wild value: dropped before the fit
+    long.loc[5, ["nir", "n_clear"]] = [5.0, 10]
+    got = predict.county_inputs(long, crop="maize")
+    numpy.testing.assert_allclose(got.loc["19169"].to_numpy(), coefficients, atol=1e-5)
 
 
 def test_a_point_takes_its_gridmet_cell():

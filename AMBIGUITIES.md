@@ -419,6 +419,9 @@ shows up immediately as thin counties in the Phase 5 aggregation.
 `implementation_choice` -- measured, not assumed; re-measure when the window or the sensor list
 changes.
 
+**Superseded for the pixel map (2026-11-26):** `predict` uses 15 (#28). This entry still sets
+the DA target's floor.
+
 ---
 
 ## 19. How a target pixel gets chosen: 50 per county, on CDL's grid, unmasked
@@ -681,5 +684,32 @@ against 0.140, and MPC has the lower RMSE in 7 of 11 years, 2016 included.
 
 **Impact if wrong.** Large and silent: both readers' features are finite and plausible, and
 the only symptoms are a flat map and a DA arm that underperforms.
+
+`implementation_choice` -- measured
+
+## 28. The pixel map's clear-date floor is 15, not the target's 20
+
+**Problem.** `predict` used the target's floor (#18, `target.MIN_OBSERVATIONS = 20`). Counties
+under one Landsat path get about half the dates of their neighbours. At 20, Grundy (19075)
+had 0% of its 2018 crop pixels predicted, Jasper 1%, Marshall 2% and Webster 4%. #18's
+reason for 20 was the target's *feature variance* seen by G_d. With DA off in the shipped
+path (#27), that reason no longer applies to the map.
+
+**Measured** (2026-11-25, 10 central counties, 2018, shipped head; Step 7 in
+`notes/yield_layer_plan.md`, `data/gate/floor.json`). Within-county r against Ma et al.
+30 m, by each pixel's clear-date count: 0.27 at 7–10, 0.66 at 10–12, 0.73 at 12–15, 0.81 at
+15–20, 0.82–0.85 at 20+. Giving well-observed pixels a real sparse pixel's mask and refitting
+costs 0.59 t/ha RMSE at 15–20 dates (bias −0.07), against a within-county SD of 1.3–2.4.
+At county scale, floor 15 scores the same as 20 (leave-one-county-out RMSE 0.54 for both, 2018).
+
+**Choice** (Ale, 2026-11-26). `predict.MIN_OBSERVATIONS = 15`. A pixel still under it stays
+NaN in the 30 m COG. In the 5′ products it takes the county-feature prediction: the same
+model on the county's mean series (`predict.county_inputs`), weather as the mean over the
+county's crop pixels. Before this, it took the mean of the predicted pixels. The fill scored
+best on every seen year (2018: 0.46 against 0.54 t/ha). `target.MIN_OBSERVATIONS` stays 20
+for the DA target (#18).
+
+**Impact if wrong.** Pixels with 15–20 dates are a little noisier and about 0.1–0.2 t/ha
+low. The anchored variant absorbs the level where NASS publishes.
 
 `implementation_choice` -- measured
