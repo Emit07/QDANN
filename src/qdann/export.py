@@ -25,7 +25,6 @@ import pandas
 import pyproj
 import rasterio
 import rasterio.transform
-import shapely
 
 from qdann import gee, mpc, nass
 
@@ -153,7 +152,7 @@ def main() -> int:
     args.out.mkdir(parents=True, exist_ok=True)
     with rasterio.Env(**mpc.GDAL_ENV):
         for year in args.years:
-            tiles = mpc.cdl_tiles(year=year, region=shapely.union_all(list(counties.values())))
+            tiles = mpc.cdl_tiles(year=year, counties=counties)
             pixels = {}
             for fips, polygon in counties.items():
                 on = mpc.grid(polygon)

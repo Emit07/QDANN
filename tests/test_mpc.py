@@ -225,3 +225,82 @@ def test_fit_drops_the_sliver_dates(tmp_path):
         tmp_path / "19169" / "gcvi_mpc_maize_2018.parquet"
     )
     pandas.testing.assert_frame_equal(mpc.fit(tmp_path, crop="maize"), expected)
+
+
+def test_years_after_mpc_read_one_cropscape_file_per_state(monkeypatch):
+    def fail():
+        raise AssertionError("MPC has no CDL after 2021")
+
+    monkeypatch.setattr(mpc, "catalog", fail)
+    monkeypatch.setattr(mpc, "cropscape", lambda year, state: f"CDL_{year}_{state}.tif")
+    a, b, c = shapely.box(-94, 42, -93, 43), shapely.box(-93, 42, -92, 43), shapely.box(-94, 40, -93, 41)
+    tiles = mpc.cdl_tiles(year=2022, counties={"19001": a, "29001": c, "19003": b})
+    assert [href for href, _ in tiles] == ["CDL_2022_19.tif", "CDL_2022_29.tif"]
+    assert tiles[0][1].equals(shapely.union_all([a, b])) and tiles[1][1].equals(c)
+
+
+def test_a_state_files_background_beyond_its_border_keeps_the_neighbours_crop(tmp_path):
+    # two state files over one county, each 0 (CDL background) where the other state is:
+    # the second must not erase the first's maize
+    polygon = shapely.box(-93.5, 42.0, -93.4, 42.05)
+    on = mpc.grid(polygon)
+    half = on.width // 2
+    tiles = []
+    for name, cols in (("a", slice(0, half)), ("b", slice(half, None))):
+        values = numpy.zeros((on.height, on.width), dtype=numpy.uint8)
+        values[:, cols] = gee.CROP_TO_CDL_CODE["maize"]
+        path = tmp_path / f"{name}.tif"
+        with rasterio.open(
+            path, "w", driver="GTiff", height=on.height, width=on.width, count=1,
+            dtype="uint8", crs=on.crs, transform=on.transform,
+        ) as dst:
+            dst.write(values, 1)
+        tiles.append((str(path), polygon))
+    crop = mpc.cropland("maize", polygon, on, tiles)
+    assert crop[mpc.inside(polygon, on)].all()
+
+
+def test_a_truncated_scene_is_dropped_and_its_date_kept(monkeypatch):
+    # MPC serves the odd truncated asset; it fails every retry, and must cost one scene,
+    # not the county-year
+    import datetime
+    import types
+
+    day = datetime.datetime(2022, 7, 23, tzinfo=datetime.timezone.utc)
+    good, bad = (types.SimpleNamespace(id=i, datetime=day) for i in ("good", "bad"))
+    polygon = shapely.box(-93.5, 42.0, -93.45, 42.03)
+    monkeypatch.setattr(mpc.time, "sleep", lambda _: None)
+    monkeypatch.setattr(mpc, "scenes", lambda **_: [bad, good])
+    monkeypatch.setattr(mpc, "cdl_tiles", lambda **_: [])
+    monkeypatch.setattr(mpc, "cropland", lambda **kw: mpc.inside(polygon, kw["on"]))
+    monkeypatch.setattr(mpc, "readable", lambda item: item is not bad)
+
+    def date_means(group, *_):
+        if bad in group:
+            raise rasterio.errors.RasterioIOError("not recognized as being in a supported file format")
+        row = {"fips": "19169", "date": "2022-07-23", "green": 0.1, "nir": 0.4, "n_clear": 5, "n_crop": 5}
+        return [row], pandas.DataFrame(columns=["fips", "pid", "date", "green", "nir"]), {}
+
+    monkeypatch.setattr(mpc, "date_means", date_means)
+    long, ids, _, _ = mpc.county_means("maize", 2022, {"19169": polygon})
+    assert ids == ["good"] and list(long["date"]) == ["2022-07-23"]
+
+
+def test_landsat7_is_left_out_only_after_its_last_year(monkeypatch):
+    import datetime
+    import types
+
+    def item(platform):
+        return types.SimpleNamespace(
+            id=platform, datetime=datetime.datetime(2023, 6, 1, tzinfo=datetime.timezone.utc),
+            properties={"landsat:collection_category": "T1", "platform": platform},
+            geometry=shapely.geometry.mapping(shapely.box(-94, 41, -93, 43)),
+        )
+
+    found = types.SimpleNamespace(items=lambda: [item("landsat-7"), item("landsat-8")])
+    monkeypatch.setattr(mpc, "catalog", lambda: types.SimpleNamespace(search=lambda **_: found))
+    region = shapely.box(-93.6, 42.0, -93.4, 42.1)
+    ids = lambda **kw: [i.id for i in mpc.scenes("maize", 2023, region, **kw)]
+    assert ids() == ["landsat-7", "landsat-8"]
+    assert ids(landsat7_last=2023) == ["landsat-7", "landsat-8"]
+    assert ids(landsat7_last=2021) == ["landsat-8"]

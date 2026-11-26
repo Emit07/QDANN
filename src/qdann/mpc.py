@@ -28,7 +28,11 @@ import contextlib
 import itertools
 import logging
 import math
+import os
 import pathlib
+import re
+import shutil
+import socket
 import time
 import typing
 import urllib.request
@@ -42,6 +46,7 @@ import pystac.errors
 import pystac_client
 import rasterio
 import rasterio.cache
+import rasterio.errors
 import rasterio.features
 import rasterio.warp
 import shapely
@@ -62,6 +67,10 @@ TIGER_CRS = "EPSG:4269"
 STAC_URL = "https://planetarycomputer.microsoft.com/api/stac/v1"
 LANDSAT = "landsat-c2-l2"
 CDL = "usda-cdl"
+# the usda-cdl collection's temporal extent ends 2021-12-31 (checked 2026-11-26); later
+# years come from CropScape's per-state files
+MPC_CDL_LAST = 2021
+CROPSCAPE_URL = "https://nassgeodata.gmu.edu/axis2/services/CDLService/GetCDLFile"
 # gee.SENSOR_BANDS's merge order: a later platform lands on top of the same-day mosaic
 PLATFORMS = ("landsat-5", "landsat-7", "landsat-8", "landsat-9")
 # MPC names bands by wavelength, so one set covers the four sensors gee.SENSOR_BANDS renames
@@ -105,9 +114,18 @@ def download(url: str, path: pathlib.Path) -> pathlib.Path:
     """Fetch `url` to `path` once; a partial download never takes the final name."""
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
-        part = path.with_suffix(path.suffix + ".part")
-        urllib.request.urlretrieve(url, part)
-        part.rename(path)
+        # per process and node: Sherlock's array jobs can fetch the same file at once
+        part = path.with_suffix(f"{path.suffix}.{socket.gethostname()}.{os.getpid()}.part")
+        try:
+            # a timeout, unlike urlretrieve: a stalled socket would hang a job to its limit
+            with urllib.request.urlopen(url, timeout=120) as r, part.open("wb") as f:
+                shutil.copyfileobj(r, f)
+                expected = r.headers.get("Content-Length")
+            if expected is not None and part.stat().st_size != int(expected):
+                raise OSError(f"{url}: {part.stat().st_size} of {expected} bytes")
+            part.rename(path)
+        finally:
+            part.unlink(missing_ok=True)
     return path
 
 
@@ -154,11 +172,14 @@ def date(item) -> str:
     return item.datetime.strftime("%Y-%m-%d")
 
 
-def scenes(crop: str, year: int, region: shapely.Geometry) -> list:
+def scenes(
+    crop: str, year: int, region: shapely.Geometry, landsat7_last: int | None = None
+) -> list:
     """Every Tier 1 scene touching `region` in the window, ordered date, platform, id.
 
     Within a date that order is the mosaic's: the last valid pixel wins, as with
-    Earth Engine's mosaic() over gee.reflectance's merge.
+    Earth Engine's mosaic() over gee.reflectance's merge. With `landsat7_last`, Landsat 7
+    is left out after that year (AMBIGUITIES #30: its overpass drifts earlier).
     """
     start, end = gee.window(crop=crop, year=year)
     # a loose outline keeps the request small; the exact test is client-side below
@@ -182,6 +203,11 @@ def scenes(crop: str, year: int, region: shapely.Geometry) -> list:
         # the server warns it does not conform to QUERY, so the tier is checked here too
         if item.properties["landsat:collection_category"] == "T1"
         and item.properties["platform"] in PLATFORMS
+        and not (
+            item.properties["platform"] == "landsat-7"
+            and landsat7_last is not None
+            and year > landsat7_last
+        )
         # STAC's end is inclusive, the window's is not
         and start <= date(item) < end
         and shapely.geometry.shape(item.geometry).intersects(region)
@@ -196,7 +222,38 @@ def scenes(crop: str, year: int, region: shapely.Geometry) -> list:
     )
 
 
-def cdl_tiles(year: int, region: shapely.Geometry) -> list:
+def cropscape(year: int, state_fips: str) -> pathlib.Path:
+    """The state's CDL GeoTIFF from CropScape, the same 30 m Albers product MPC tiles,
+    downloaded once to data/cdl/ (about 210 MB for Iowa)."""
+    path = gee.DATA_DIR / "cdl" / f"CDL_{year}_{state_fips}.tif"
+    if not path.exists():
+        def ask() -> bytes:
+            query = f"{CROPSCAPE_URL}?year={year}&fips={state_fips}"
+            with urllib.request.urlopen(query, timeout=120) as r:
+                return r.read()
+
+        url = re.search(rb"<returnURL>(.+?)</returnURL>", retry(ask))
+        if url is None:
+            raise ValueError(f"CropScape has no CDL for state {state_fips} in {year}")
+        retry(lambda: download(url.group(1).decode(), path))
+    return path
+
+
+def cdl_tiles(
+    year: int, counties: dict[str, shapely.Geometry]
+) -> list[tuple[str, shapely.Geometry]]:
+    """(href, footprint) of the CDL rasters covering `counties`: MPC's tiles to 2021,
+    CropScape's state files after, whose footprint is the state's counties here."""
+    region = shapely.union_all(list(counties.values()))
+    if year > MPC_CDL_LAST:
+        return [
+            (
+                str(cropscape(year, state)),
+                shapely.union_all([p for f, p in counties.items() if f[:2] == state]),
+            )
+            for state in sorted({fips[:2] for fips in counties})
+        ]
+
     def search() -> list:
         return list(
             catalog()
@@ -209,13 +266,12 @@ def cdl_tiles(year: int, region: shapely.Geometry) -> list:
         )
 
     ret = [
-        item
+        (item.assets["cropland"].href, shapely.geometry.shape(item.geometry))
         for item in retry(search)
         if item.id.startswith(f"cropland_{year}_")
         and shapely.geometry.shape(item.geometry).intersects(region)
     ]
-    # an empty list would give every county an empty crop mask, silently: MPC's CDL
-    # stops at 2021
+    # an empty list would give every county an empty crop mask, silently
     if not ret:
         raise ValueError(f"no CDL tiles on MPC for {year} over this region")
     return ret
@@ -341,20 +397,31 @@ def opened(href: str) -> rasterio.DatasetReader:
     return rasterio.open(planetary_computer.sign(href))
 
 
+def readable(item) -> bool:
+    """Whether every asset the reader uses opens, after the usual retries."""
+    try:
+        for name in ASSETS:
+            retry(lambda name=name: opened(item.assets[name].href).close())
+    except rasterio.errors.RasterioIOError:
+        return False
+    return True
+
+
 def cropland(
-    crop: str, polygon: shapely.Geometry, on: Grid, tiles: list
+    crop: str, polygon: shapely.Geometry, on: Grid, tiles: list[tuple[str, shapely.Geometry]]
 ) -> numpy.ndarray:
     """True for the county's pixels CDL labels as the crop."""
     classes = numpy.zeros((on.height, on.width), dtype=numpy.uint8)
     footprint = polygon.envelope
-    for tile in tiles:
-        if not shapely.geometry.shape(tile.geometry).intersects(footprint):
+    for href, tile in tiles:
+        if not tile.intersects(footprint):
             continue
-        with opened(tile.assets["cropland"].href) as src:
+        with opened(href) as src:
             values = retry(lambda src=src: read(src, on))
             outside = fill(src)
-        # the tiles abut without overlapping
-        classes = numpy.where(values != outside, values, classes)
+        # the tiles abut without overlapping. Class 0 is CDL's background, which is what
+        # a state file holds beyond its border: it must not overwrite the neighbour's classes
+        classes = numpy.where((values != outside) & (values != 0), values, classes)
     return (classes == gee.CROP_TO_CDL_CODE[crop]) & inside(polygon, on)
 
 
@@ -439,6 +506,7 @@ def county_means(
     counties: dict[str, shapely.Geometry],
     points: pandas.DataFrame | None = None,
     full: bool = False,
+    landsat7_last: int | None = None,
 ) -> tuple[pandas.DataFrame, list[str], pandas.DataFrame, dict[str, Pixels]]:
     """The long table (fips, year, date, green, nir, n_clear, n_crop), the scene ids, the
     target's long table (fips, pid, year, date, green, nir) at `points` (pid, fips, lon,
@@ -447,8 +515,8 @@ def county_means(
     if points is None:
         points = pandas.DataFrame(columns=["fips", "pid", "lon", "lat"])
     region = shapely.union_all(list(counties.values()))
-    items = scenes(crop=crop, year=year, region=region)
-    tiles = cdl_tiles(year=year, region=region)
+    items = scenes(crop=crop, year=year, region=region, landsat7_last=landsat7_last)
+    tiles = cdl_tiles(year=year, counties=counties)
     grids = {fips: grid(polygon) for fips, polygon in counties.items()}
     crops = {
         fips: cropland(crop=crop, polygon=polygon, on=grids[fips], tiles=tiles)
@@ -458,12 +526,27 @@ def county_means(
     # dates one at a time: 4 in flight and GDAL_HTTP_MERGE_CONSECUTIVE_RANGES were each
     # slower on a 4-CPU laptop (2026-11-25, 12 dates x 3 rounds), and the blobs speak
     # HTTP/1.1 only, so GDAL_HTTP_MULTIPLEX has nothing to multiplex
-    rows, pixels, dates, series = [], [], [], {}
+    rows, pixels, dates, series, used = [], [], [], {}, []
     for day, group in itertools.groupby(items, key=date):
         group = list(group)
-        means, values, stacks = retry(
-            lambda group=group: date_means(group, counties, grids, crops, points, full)
-        )
+        try:
+            means, values, stacks = retry(
+                lambda group=group: date_means(group, counties, grids, crops, points, full)
+            )
+        except rasterio.errors.RasterioIOError:
+            # MPC holds a few truncated assets (LC08 027/030 2022-07-23's nir08 is 12 kB),
+            # which fail on every retry: drop the scene, never the county-year
+            bad = [item for item in group if not readable(item)]
+            if not bad:
+                raise
+            logger.warning("%s: skipping unreadable scene(s) %s", day, [i.id for i in bad])
+            group = [item for item in group if item not in bad]
+            if not group:
+                continue
+            means, values, stacks = retry(
+                lambda group=group: date_means(group, counties, grids, crops, points, full)
+            )
+        used += group
         rows += means
         pixels.append(values)
         dates.append(day)
@@ -487,7 +570,7 @@ def county_means(
         )
     pixels = pandas.concat(pixels, ignore_index=True) if pixels else points.iloc[:0]
     pixels.insert(2, "year", year)
-    return long, [item.id for item in items], pixels, full_series
+    return long, [item.id for item in used], pixels, full_series
 
 
 def year_path(out: pathlib.Path, crop: str, year: int) -> pathlib.Path:
@@ -630,6 +713,11 @@ def main() -> int:
         action="store_true",
         help="also read the stored target pixels, in the same pass",
     )
+    parser.add_argument(
+        "--landsat7-last",
+        type=int,
+        help="leave Landsat 7 out after this year (AMBIGUITIES #30); default keeps it",
+    )
     args = parser.parse_args()
 
     if args.gate is not None:
@@ -693,6 +781,7 @@ def main() -> int:
                 points=points(crop=args.crop, year=year, fips=counties)
                 if args.target
                 else None,
+                landsat7_last=args.landsat7_last,
             )
             (out / f"scenes_mpc_{args.crop}_{year}.txt").write_text("\n".join(ids))
             if args.target:

@@ -713,3 +713,50 @@ for the DA target (#18).
 low. The anchored variant absorbs the level where NASS publishes.
 
 `implementation_choice` -- measured
+
+## 29. CDL after 2021 comes from CropScape, not MPC
+
+**Paper.** Reads CDL through Earth Engine (`USDA/NASS/CDL`), any year.
+
+**Problem.** MPC's `usda-cdl` collection ends 2021-12-31 (temporal extent, checked
+2026-11-26; 35 cropland tiles over Iowa each year 2017–2021, none 2022–2025). jdLUC needs
+2022–2023, and #27 keeps Landsat on MPC.
+
+**Choice.** `mpc.cdl_tiles` reads MPC through `MPC_CDL_LAST = 2021` and, after it, CropScape's
+per-state GeoTIFF (`mpc.cropscape`, `GetCDLFile?year=&fips=`, cached in `data/cdl/`). Same
+product: 30 m, EPSG:5070, uint8 classes. A state file holds class 0 beyond its border, so
+`cropland` no longer lets class 0 overwrite a neighbour's classes. The Landsat reader is
+unchanged, so #27 holds for the features.
+
+**Measured** (2021, both sources, `cropland` on the county grid): identical maize masks for
+Story, Grundy and Adair; Woodbury (Nebraska border) 929,567 vs 929,563 pixels, 4 differ.
+
+**Impact if wrong.** None measurable in the overlap year. The state file is clipped at the
+state line, so a border county loses the sliver of its TIGER outline beyond it: 13,001 of
+161.9 M in-county pixels in 2022, worst 19085 at 0.098% (code-reviewer, 2026-11-26). With
+several states read, each state's file fills its own side.
+
+`implementation_choice` -- measured
+
+## 30. Landsat 7 after its orbit drift: Ale's choice, made before the read
+
+**Paper.** Landsat 5/7/8, every scene, no time-of-day rule.
+
+**Problem.** Landsat 7's overpass drifts earlier from about 2017. At Story County (19169),
+MPC's Tier 1 scenes are at 16:55 UTC in 2016, 16:17–15:48 in 2021, and 15:01–14:37 in 2023,
+about 08:25 local solar time against 10:40 before. In April 2022 it left the WRS-2 orbit
+(8 scenes in 2022, none after July). GCVI under a low morning sun is not the same
+measurement as Landsat 8/9's, so 2022–2023 features could shift with the year, not the
+yield. On shared dates (6 in 2023 at Story) its pixels are mosaicked with OLI's, so it
+cannot be removed after the read.
+
+**Choice.** `mpc.scenes(landsat7_last=)` / `mpc --landsat7-last YEAR` leave Landsat 7 out
+after YEAR; the default keeps it (the paper's reader, and every table built before
+2026-11-26). `sherlock_extend.sbatch` refuses to start until `L7_LAST` is set, and the
+choice names the reads directory, the table and the model. Recommended: `L7_LAST=2021`.
+2022–2023 keep 60–70 Landsat 8/9 scenes a year, more than any year before.
+
+**Not yet measured.** The GCVI offset on near-paired Landsat 7 / OLI dates. Measure it on
+the 2019–2021 reads, which keep Landsat 7 under either choice.
+
+`open` -- Ale's call

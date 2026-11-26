@@ -54,8 +54,8 @@ def test_the_resume_key_changes_with_the_source_table(tmp_path):
 
 
 def test_a_year_without_cdl_tiles_raises(monkeypatch):
-    # MPC's CDL stops at 2021; an empty list would give every county an empty crop mask
+    # an empty list would give every county an empty crop mask
     search = types.SimpleNamespace(items=lambda: [])
     monkeypatch.setattr(mpc, "catalog", lambda: types.SimpleNamespace(search=lambda **_: search))
-    with pytest.raises(ValueError, match="2022"):
-        mpc.cdl_tiles(year=2022, region=shapely.box(-94, 42, -93, 43))
+    with pytest.raises(ValueError, match="2021"):
+        mpc.cdl_tiles(year=2021, counties={"19001": shapely.box(-94, 42, -93, 43)})

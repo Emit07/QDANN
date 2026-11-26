@@ -190,9 +190,15 @@ def main() -> int:
     parser.add_argument(
         "--overwrite", action="store_true", help="replace data/models/qdann_<crop>.pt"
     )
+    parser.add_argument(
+        "--name", help="save as qdann_<crop>_<name>.pt and tune_<crop>_<name>.json instead"
+    )
     args = parser.parse_args()
     table = weather.read(args.source)
-    shipped = weather.DATA_DIR / "models" / f"qdann_{args.crop}.pt"
+    # first, not after hours of jobs: fails fast where git is missing (a container)
+    started = provenance(table)
+    suffix = "" if args.name is None else f"_{args.name}"
+    shipped = weather.DATA_DIR / "models" / f"qdann_{args.crop}{suffix}.pt"
     if shipped.exists() and not args.overwrite:
         parser.error(f"{shipped} exists; pass --overwrite to replace it at the end")
     log = weather.DATA_DIR / f"tune_{args.crop}.jsonl"
@@ -250,11 +256,11 @@ def main() -> int:
         for name in ("ridge", "random_forest", "dnn")
     }
     margin = summary["with_intervals"]["conformal_margin"]
-    summary["provenance"] = provenance(table)
+    summary["provenance"] = started
     summary["model_path"] = str(
-        save(table, args.crop, dropout, epochs, margin, overwrite=args.overwrite)
+        save(table, args.crop, dropout, epochs, margin, name=args.name, overwrite=args.overwrite)
     )
-    out = weather.DATA_DIR / f"tune_{args.crop}.json"
+    out = weather.DATA_DIR / f"tune_{args.crop}{suffix}.json"
     out.write_text(json.dumps(summary, indent=2, default=float))
     print(json.dumps(summary, indent=2, default=float))
     print(f"-> {out}")
