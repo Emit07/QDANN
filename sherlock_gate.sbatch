@@ -17,7 +17,9 @@
 #   apptainer exec py.sif .venv/bin/python -c "from qdann import weather; [weather.gridmet_file(v, y) for v in weather.VARIABLES for y in (2020, 2022, 2023)]"
 #   sbatch sherlock_gate.sbatch
 # Then, from the laptop:
-#   rsync -av sherlock:'$SCRATCH/qdann/gate/features/*_202[023].parquet' data/gate/features/
+#   # absolute path: rsync >=3.2.4 protects args, so the remote shell won't expand $SCRATCH or globs
+#   rsync -av --include='*_202[023].parquet' --exclude='*' \
+#     sherlock:/scratch/users/adeleo/qdann/gate/features/ data/gate/features/
 #
 #SBATCH --job-name=qdann-gate
 #SBATCH --partition=normal,owners
