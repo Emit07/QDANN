@@ -128,6 +128,8 @@ def save(
     )
     if path.exists() and not overwrite:
         raise FileExistsError(f"{path} exists; pass overwrite=True to replace it")
+    # before training: edits made while the heads train must not mark this code dirty
+    started = provenance(table, *([] if target is None else [target]))
     features = train.feature_columns(table)
     x, *rest = train.standardize(
         table, *([] if target is None else [target]), columns=features
@@ -158,7 +160,7 @@ def save(
         state_dicts.append(model.state_dict())
     path.parent.mkdir(exist_ok=True)
     meta = {
-        "provenance": provenance(table, *([] if target is None else [target])),
+        "provenance": started,
         "arm": {"adversarial": adversarial, "vae_filter": vae_filter,
                 "seed": seed if isinstance(seed, int) else list(seed),
                 "match_years": match_years},
