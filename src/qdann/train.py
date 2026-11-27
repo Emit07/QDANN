@@ -375,8 +375,13 @@ def evaluate(
     inner: bool = False,
     holdout_year: int | None = None,
     mix_target: bool = True,
+    ensemble: tuple[int, ...] | None = None,
 ) -> dict[str, float]:
     """Fit one arm and score it on the held-out counties.
+
+    `ensemble` fits one head per listed seed on the fold `seed` draws and scores the mean
+    of their outputs, as `predict.Ensemble` does (AMBIGUITIES #32); with intervals it also
+    returns each head's own scores under `members`. Counties only, no target.
 
     Both arms are run with the same `target`: they then share their BatchNorm statistics
     and differ only in the domain loss and the reversed gradient, which is the difference
@@ -438,21 +443,27 @@ def evaluate(
         # keeps the weights aligned with the rows they belong to
         train_x, train_y_std = train_x[keep], train_y_std[keep]
 
-    model = fit(
-        source_x=train_x,
-        source_y=train_y_std,
-        target_x=rest[0] if rest and mix_target else None,
-        sample_weights=sample_weights,
-        adversarial=adversarial,
-        quantile=quantile,
-        epochs=epochs,
-        seed=seed,
-        dropout=dropout,
-        interval_weight=interval_weight,
-    )
+    assert ensemble is None or not rest, "an ensemble is scored on counties only"
+    models = [
+        fit(
+            source_x=train_x,
+            source_y=train_y_std,
+            target_x=rest[0] if rest and mix_target else None,
+            sample_weights=sample_weights,
+            adversarial=adversarial,
+            quantile=quantile,
+            epochs=epochs,
+            seed=s,
+            dropout=dropout,
+            interval_weight=interval_weight,
+        )
+        for s in ((seed,) if ensemble is None else ensemble)
+    ]
+    model = models[0]
     with torch.no_grad():
-        yhat, _, bounds = model(test_x)
-        yhat, bounds = yhat * std + mean, bounds * std + mean
+        # (point, bounds) per head, in t/ha; the mean of heads is predict.Ensemble's
+        members = [(p * std + mean, b * std + mean) for p, _, b in (m(test_x) for m in models)]
+    yhat, bounds = (torch.stack(o).mean(0) for o in zip(*members))
     years = test["year"].to_numpy()
     baseline = per_year_mean(train, test)
     ret = (
@@ -465,12 +476,22 @@ def evaluate(
     )
     if interval_weight > 0:
         _, calibration = split(test, holdout=0.5, seed=seed)
-        ret |= conformal(
-            y=test_y,
-            lo=torch.minimum(bounds[:, 0], yhat),
-            hi=torch.maximum(bounds[:, 1], yhat),
-            calibrate=test.index.isin(calibration.index),
-        )
+        calibrate = test.index.isin(calibration.index)
+
+        def interval(yhat, bounds):
+            return conformal(
+                y=test_y,
+                lo=torch.minimum(bounds[:, 0], yhat),
+                hi=torch.maximum(bounds[:, 1], yhat),
+                calibrate=calibrate,
+            )
+
+        ret |= interval(yhat, bounds)
+        if ensemble is not None:
+            # each head alone on the same fold and calibration half: the paired baseline
+            ret["members"] = [
+                scores(y=test_y, yhat=p, years=years) | interval(p, b) for p, b in members
+            ]
     if rest:
         ret["domain_accuracy"] = domain_accuracy(
             model, source_x=train_x, target_x=rest[0], seed=seed

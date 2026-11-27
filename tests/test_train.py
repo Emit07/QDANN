@@ -242,3 +242,14 @@ def test_same_year_draws_only_that_years_target_rows():
     assert set(draw(torch.tensor([1] * 200)).tolist()) == {1, 3}
     with pytest.raises(AssertionError):
         train.same_year(torch.tensor([2010]), target_years)
+
+
+def test_an_ensemble_scores_the_mean_of_heads_on_one_fold():
+    frame = table()
+    single = train.evaluate(frame, epochs=20, seed=3, interval_weight=1.0)
+    ens = train.evaluate(frame, epochs=20, seed=3, interval_weight=1.0, ensemble=(3, 4))
+    # head 3 on fold 3 is the ordinary single-seed run, so the fold is the same
+    assert ens["members"][0]["rmse"] == pytest.approx(single["rmse"])
+    assert ens["members"][0]["coverage"] == pytest.approx(single["coverage"])
+    assert ens["members"][0]["rmse"] != pytest.approx(ens["members"][1]["rmse"])
+    assert ens["rmse"] != pytest.approx(single["rmse"])  # the mean, not head 0
