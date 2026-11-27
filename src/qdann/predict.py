@@ -56,17 +56,33 @@ def load(
     crop: str, path: pathlib.Path | None = None, check: bool = True
 ) -> tuple[QDANN, dict]:
     """The shipped data/models/qdann_<crop>.pt, or another `tune.save` file at `path`.
+    A file holding several seeds' weights loads as their `Ensemble`.
 
     `check` refuses a model trained on a non-MPC table (`check_reader`); pass False only
     to load a GEE-trained arm on purpose, for comparison."""
     path = weather.DATA_DIR / "models" / f"qdann_{crop}.pt" if path is None else path
     saved = torch.load(path, weights_only=False)
-    model = QDANN(len(saved["features"]), dropout=saved["dropout"], intervals=True)
-    model.load_state_dict(saved["state_dict"])
+    members = []
+    for state_dict in saved.get("state_dicts") or [saved["state_dict"]]:
+        members.append(QDANN(len(saved["features"]), dropout=saved["dropout"], intervals=True))
+        members[-1].load_state_dict(state_dict)
+    model = members[0] if len(members) == 1 else Ensemble(members)
     logger.info("%s: %s", path.name, saved.get("provenance", "no provenance recorded"))
     if check:
         check_reader(saved)
     return model.eval(), saved
+
+
+class Ensemble(torch.nn.Module):
+    """Several seeds' heads, outputs averaged (AMBIGUITIES #32): q50, and q10/q90 each
+    averaged across seeds."""
+
+    def __init__(self, members: list[QDANN]) -> None:
+        super().__init__()
+        self.members = torch.nn.ModuleList(members)
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, ...]:
+        return tuple(torch.stack(o).mean(0) for o in zip(*(m(x) for m in self.members)))
 
 
 def check_reader(saved: dict) -> None:

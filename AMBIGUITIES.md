@@ -783,3 +783,24 @@ unchecked. `predict.frames` keeps only the requested counties' rows, so it never
 withheld counties (their `anchored_P` is 0); that predates this change and is a guard.
 
 `assumption`
+
+## 32. The saved model averages three seeds
+
+**Paper.** One trained network.
+
+**Problem.** Training noise is large next to the effects being judged. In the Stage 1 gate
+for 2019 (24 held-out counties, floor 15), the single-seed heads score RMSE 0.87 / 0.69 /
+0.73 t/ha against 0.72 for the district fallback. Their mean scores 0.65. The gate scored
+that mean, while `tune.save` shipped seed 0 alone.
+
+**Choice.** `tune` saves seeds 0, 1 and 2 in one checkpoint (`state_dicts`).
+`predict.load` returns a `predict.Ensemble`, which averages q50, and q10 and q90 each,
+across seeds. A pixel's raw county mean is then exactly the gate's seed mean. One-seed
+files still load as before. Prediction costs 3×. **Decided (Ale, 2026-11-27).**
+
+**Not yet measured.** The conformal margin was calibrated on single-seed held-out folds.
+The ensemble's interval coverage has not been rechecked. Averaging the seeds' quantiles
+probably narrows q10–q90 a little, while the point error falls too.
+**Must be rechecked before the lab handoff** (Ale, 2026-11-27; plan Stage 3, Lab).
+
+`departure` -- decided by Ale

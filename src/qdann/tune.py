@@ -106,7 +106,7 @@ def save(
     target=None,
     adversarial: bool = False,
     vae_filter: bool = False,
-    seed: int = 0,
+    seed: int | tuple[int, ...] = 0,
     name: str | None = None,
     match_years: bool = False,
     overwrite: bool = False,
@@ -117,6 +117,9 @@ def save(
     pick the arm, as in `train.evaluate`; `name` then keeps the arm's weights apart from
     the shipped `qdann_<crop>.pt`. `match_years` pairs each county-year with target pixels
     of its own year (`train.fit`).
+
+    A tuple of seeds trains one head per seed and saves all their weights in one file;
+    `predict.load` then averages their outputs (AMBIGUITIES #32).
 
     Refuses to replace an existing checkpoint unless `overwrite`: the default name is the
     shipped model. Writes `provenance` into the checkpoint and a `.json` beside it."""
@@ -131,33 +134,38 @@ def save(
     )
     y = torch.tensor(table[weather.LABEL_COLUMN].to_numpy(), dtype=torch.float32)
     mean, std = float(y.mean()), float(y.std())
-    y, weights = (y - mean) / std, None
+    y = (y - mean) / std
     years = torch.tensor(table["year"].to_numpy())
-    if vae_filter:
-        keep, weights = train.vae_weights(x, rest[0], epochs=epochs, seed=seed, crop=crop)
-        x, y, years = x[keep], y[keep], years[keep]
-    model = train.fit(
-        source_x=x,
-        source_y=y,
-        target_x=rest[0] if rest else None,
-        sample_weights=weights,
-        adversarial=adversarial,
-        source_years=years if match_years else None,
-        target_years=torch.tensor(target["year"].to_numpy()) if match_years else None,
-        epochs=epochs,
-        seed=seed,
-        dropout=dropout,
-        interval_weight=1.0,
-    )
+    state_dicts = []
+    for s in (seed,) if isinstance(seed, int) else seed:
+        xs, ys, yrs, weights = x, y, years, None
+        if vae_filter:
+            keep, weights = train.vae_weights(x, rest[0], epochs=epochs, seed=s, crop=crop)
+            xs, ys, yrs = x[keep], y[keep], years[keep]
+        model = train.fit(
+            source_x=xs,
+            source_y=ys,
+            target_x=rest[0] if rest else None,
+            sample_weights=weights,
+            adversarial=adversarial,
+            source_years=yrs if match_years else None,
+            target_years=torch.tensor(target["year"].to_numpy()) if match_years else None,
+            epochs=epochs,
+            seed=s,
+            dropout=dropout,
+            interval_weight=1.0,
+        )
+        state_dicts.append(model.state_dict())
     path.parent.mkdir(exist_ok=True)
     meta = {
         "provenance": provenance(table, *([] if target is None else [target])),
-        "arm": {"adversarial": adversarial, "vae_filter": vae_filter, "seed": seed,
+        "arm": {"adversarial": adversarial, "vae_filter": vae_filter,
+                "seed": seed if isinstance(seed, int) else list(seed),
                 "match_years": match_years},
     }
     torch.save(
         {
-            "state_dict": model.state_dict(),
+            **({"state_dict": state_dicts[0]} if isinstance(seed, int) else {"state_dicts": state_dicts}),
             "features": features,
             "feature_mean": table[features].mean().to_numpy(),
             "feature_std": table[features].std().to_numpy(),
@@ -258,7 +266,9 @@ def main() -> int:
     margin = summary["with_intervals"]["conformal_margin"]
     summary["provenance"] = started
     summary["model_path"] = str(
-        save(table, args.crop, dropout, epochs, margin, name=args.name, overwrite=args.overwrite)
+        # three seeds, outputs averaged: the gate only supports the mean (#32, Ale 2026-11-27)
+        save(table, args.crop, dropout, epochs, margin, seed=(0, 1, 2), name=args.name,
+             overwrite=args.overwrite)
     )
     out = weather.DATA_DIR / f"tune_{args.crop}{suffix}.json"
     out.write_text(json.dumps(summary, indent=2, default=float))

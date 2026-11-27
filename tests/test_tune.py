@@ -59,3 +59,16 @@ def test_a_year_without_cdl_tiles_raises(monkeypatch):
     monkeypatch.setattr(mpc, "catalog", lambda: types.SimpleNamespace(search=lambda **_: search))
     with pytest.raises(ValueError, match="2021"):
         mpc.cdl_tiles(year=2021, counties={"19001": shapely.box(-94, 42, -93, 43)})
+
+
+def test_a_multi_seed_file_predicts_the_mean_of_its_seeds(tmp_path, monkeypatch):
+    source, _ = _save(tmp_path, monkeypatch, "source_mpc_maize.parquet")
+    q50 = {}
+    for seed in (0, 1, (0, 1)):
+        name = f"s{seed}" if isinstance(seed, int) else "ens"
+        path = tune.save(source, "maize", 0.1, 2, 0.3, seed=seed, name=name)
+        model, saved = predict.load("maize", path)
+        q50[name] = predict.apply(model, saved, source)[0]
+    assert isinstance(model, predict.Ensemble)
+    assert (q50["s0"] != q50["s1"]).any()  # the seeds differ, so the mean is a real test
+    assert abs(q50["ens"] - (q50["s0"] + q50["s1"]) / 2).max() < 1e-4
