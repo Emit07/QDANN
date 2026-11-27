@@ -155,7 +155,7 @@ def score(floor: int = 20) -> list[dict]:
             if numpy.isnan(row["raw"]):
                 row["raw"] = None
             if year > 2018:  # the 2008-2018 shipped head: year unseen
-                row["shipped"] = county_yield(D / "models" / "qdann_maize.pt", f)[0]
+                row["shipped"] = county_yield(D / "models" / "qdann_maize_2008_2018.pt", f)[0]
             if (fips, year) in table.index:
                 # the same LOCO heads on the county's mean features: pixel vs county scale
                 one = table.loc[[(fips, year)]].reset_index()
