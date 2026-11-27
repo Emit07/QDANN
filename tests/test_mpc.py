@@ -304,3 +304,10 @@ def test_landsat7_is_left_out_only_after_its_last_year(monkeypatch):
     assert ids() == ["landsat-7", "landsat-8"]
     assert ids(landsat7_last=2023) == ["landsat-7", "landsat-8"]
     assert ids(landsat7_last=2021) == ["landsat-8"]
+
+
+def test_write_atomic_leaves_no_part(tmp_path):
+    path = tmp_path / "gcvi_mpc_maize_2020.parquet"
+    mpc.write_atomic(pandas.DataFrame({"a": [1, 2]}), path)
+    assert pandas.read_parquet(path)["a"].tolist() == [1, 2]
+    assert [p.name for p in tmp_path.iterdir()] == [path.name]

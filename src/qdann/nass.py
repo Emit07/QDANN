@@ -233,7 +233,7 @@ def main() -> int:
         "--crop", choices=sorted(CROP_TO_COMMODITY_DESC), default="maize"
     )
     parser.add_argument("--years", type=year_range, default=year_range("2008-2018"))
-    parser.add_argument("--state", nargs=argparse.ONE_OR_MORE, default=["19"])
+    parser.add_argument("--state", nargs=argparse.ONE_OR_MORE, required=True)
     parser.add_argument("--out", type=pathlib.Path)
     args = parser.parse_args()
 

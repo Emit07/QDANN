@@ -7,7 +7,7 @@ differ in one thing only -- a county mean versus a single 30 m pixel -- so this 
   uv run python -m qdann.target --crop maize --year 2018 --county 19169 --per-county 5
   uv run python -m qdann.target --crop maize --years 2008-2018 --state 19 --export
   uv run python -m qdann.target --crop maize --from-csv ~/Downloads
-  uv run python -m qdann.target --crop maize --weather
+  uv run python -m qdann.target --crop maize --state 19 --weather
   uv run python -m qdann.target --crop maize --join
 
 The second writes one CSV per year to the Google Drive of the Earth Engine account, not to
@@ -411,7 +411,7 @@ def main() -> int:
         "--years", type=gee.year_range, default=gee.year_range("2008-2018")
     )
     parser.add_argument(
-        "--state", default="19", help="two-digit state FIPS, e.g. 19 for Iowa"
+        "--state", help="two-digit state FIPS, e.g. 19 for Iowa"
     )
     parser.add_argument("--county", help="five-digit county FIPS, e.g. 19169")
     parser.add_argument("--per-county", type=int, default=PER_COUNTY)
@@ -477,6 +477,9 @@ def main() -> int:
         )
         return 0
 
+    if args.state is None and args.county is None:
+        parser.error("an Earth Engine query needs --state or --county")
+    args.state = args.state or args.county[:2]
     ee.Initialize(project=env.get("EE_PROJECT"))
 
     if args.weather:

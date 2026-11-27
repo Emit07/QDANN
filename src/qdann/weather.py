@@ -254,12 +254,14 @@ def main() -> int:
         "--years", type=gee.year_range, default=gee.year_range("2008-2018")
     )
     parser.add_argument(
-        "--state", default="19", help="two-digit state FIPS, e.g. 19 for Iowa"
+        "--state", help="two-digit state FIPS, e.g. 19 for Iowa"
     )
     parser.add_argument(
         "--join", action="store_true", help="skip the query and build the source table"
     )
     args = parser.parse_args()
+    if not args.join and args.state is None:
+        parser.error("the gridMET query needs --state")
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     out = DATA_DIR / f"gridmet_{args.crop}.parquet"

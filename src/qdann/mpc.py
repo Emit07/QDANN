@@ -574,6 +574,14 @@ def county_means(
     return long, [item.id for item in used], pixels, full_series
 
 
+def write_atomic(table: pandas.DataFrame, path: pathlib.Path) -> None:
+    """A job killed mid-write (timeout, owners preemption) leaves a .part, never a
+    truncated year file that resume and the completeness checks would count as done."""
+    part = path.with_name(path.name + ".part")
+    table.to_parquet(part, index=False)
+    part.replace(path)
+
+
 def year_path(out: pathlib.Path, crop: str, year: int) -> pathlib.Path:
     return out / f"gcvi_mpc_{crop}_{year}.parquet"
 
@@ -699,7 +707,7 @@ def main() -> int:
     parser.add_argument("--crop", choices=sorted(gee.CROP_TO_CDL_CODE), required=True)
     parser.add_argument("--years", type=gee.year_range)
     parser.add_argument(
-        "--state", default="19", help="two-digit state FIPS, e.g. 19 for Iowa"
+        "--state", help="two-digit state FIPS, e.g. 19 for Iowa"
     )
     parser.add_argument("--county", help="five-digit county FIPS, e.g. 19169")
     parser.add_argument("--out", type=pathlib.Path, help="default data/mpc/<area>")
@@ -764,6 +772,8 @@ def main() -> int:
         return 0
 
     state = args.county[:2] if args.county else args.state
+    if state is None:
+        parser.error("a read needs --state or --county")
     counties = state_counties(state, (args.county,) if args.county else ())
     out = args.out or gee.DATA_DIR / "mpc" / (args.county or state)
     out.mkdir(parents=True, exist_ok=True)
@@ -786,9 +796,9 @@ def main() -> int:
             )
             (out / f"scenes_mpc_{args.crop}_{year}.txt").write_text("\n".join(ids))
             if args.target:
-                pixels.to_parquet(pixels_path, index=False)
+                write_atomic(pixels, pixels_path)
             # written last, so a year only counts as done once all of it is on disk
-            long.to_parquet(path, index=False)
+            write_atomic(long, path)
             logger.info(
                 "%d: %d rows in %.0f s -> %s",
                 year,

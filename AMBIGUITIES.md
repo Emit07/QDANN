@@ -814,3 +814,43 @@ yields. The pixel and 5′ low/high grids apply the same county-scale margin, wh
 untested at cell scale and probably too narrow there (no pixel truth in Iowa).
 
 `departure` -- decided by Ale
+
+## 33. Irrigation is in the labels but not in the features (Stage 2)
+
+**Paper.** No irrigation term. SPEC.md's features are GCVI harmonics and growing-season
+weather.
+
+**Problem.** Iowa corn is almost all rain-fed; western Kansas corn largely is not. The source
+label is NASS `ALL PRODUCTION PRACTICES`, a blend of irrigated and dryland fields, and the
+CDL mask can't tell them apart. So a KS county's yield depends partly on its irrigated
+share, which no input carries. Heat and dryness hurt irrigated fields far less than the
+weather columns imply, so in drought years (2011, 2012, 2022 in KS) the weather features
+should mislead most. The harmonics may carry some of it (irrigated fields stay green):
+a hypothesis, not checked. Finney (20055) 2021 already sits outside Iowa's range
+(c 2.04, a1 1.04; Iowa 2021 c 2.53–3.97, a1 1.71–3.51).
+
+**What exists (checked 2026-11-27, Quick Stats):**
+- Survey county yields by practice (`IRRIGATED` / `NON-IRRIGATED`, grain): KS 2008–2018
+  only (264 irrigated county-years), SD 2008–2009, MO none. Nothing after 2018.
+- Census of Agriculture `CORN, GRAIN, IRRIGATED - ACRES HARVESTED` by county in 2012,
+  2017 and 2022 (KS 82–87 counties, SD 39–46, MO 45–49; the rest are zero or `(D)`).
+- 30 m irrigation maps (LANID, AIM-HPA for the High Plains Aquifer, and others): not
+  checked for years, coverage or licence.
+
+**Options, cheapest first:**
+1. *Diagnose only (no method change).* Score Stage 2 by region (KS crop reporting
+   districts, west vs east) and plot county residuals against the census irrigated share
+   (nearest census year). Do this whatever else is chosen.
+2. *County irrigated share as a feature.* From the census, held per county between
+   censuses. It fixes the county level, but every pixel of a county then gets the county's
+   share, so it can't place irrigated vs dryland within a county.
+3. *Pixel irrigation mask as a feature.* Train on the county mean of the mask, apply each
+   pixel's own 0/1, the same scale transfer as GCVI. It needs a map covering 2008–2023,
+   the same at both scales (#27's rule).
+4. *Separate irrigated and dryland heads.* Train on the KS 2008–2018 by-practice yields,
+   applied through a pixel mask. Few labels, and none after 2018.
+
+**Choice.** None yet. Stage 2 reads and trains on the blended label as for Iowa, then runs
+option 1. Options 2–4 change the method and are Ale's call.
+
+`open`
