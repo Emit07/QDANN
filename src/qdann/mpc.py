@@ -416,7 +416,8 @@ def cropland(
     for href, tile in tiles:
         if not tile.intersects(footprint):
             continue
-        with opened(href) as src:
+        # signing fetches a SAS token, which MPC throttles (429) when many tasks start at once
+        with retry(lambda href=href: opened(href)) as src:
             values = retry(lambda src=src: read(src, on))
             outside = fill(src)
         # the tiles abut without overlapping. Class 0 is CDL's background, which is what

@@ -29,6 +29,22 @@ table=data/source_mpc_maize_2008_2023_l7_$L7_LAST.parquet
 # tune records the git commit; fail now, not after hours, if the container can't see it
 $python -c "from qdann import tune; print(tune.provenance())"
 if [ ! -e "$table" ]; then
+    # --fit fits whatever is on disk and join tolerates 5% unmatched labels, so a county
+    # whose task failed would drop out silently: require every county-year first
+    $python - "$reads" <<'EOF'
+import pathlib, sys
+from qdann import mpc
+reads = pathlib.Path(sys.argv[1])
+missing = [
+    f"{fips}/{year}"
+    for fips in sorted(mpc.state_counties("19"))
+    for year in range(2019, 2024)
+    if not (reads / fips / f"gcvi_mpc_maize_{year}.parquet").exists()
+]
+if missing:
+    raise SystemExit(f"{len(missing)} county-years missing under {reads}: {missing[:20]}")
+print(f"all county-years read under {reads}")
+EOF
     $python -m qdann.mpc --crop maize --fit "$reads"
     $python data/extend/join.py "$reads/gcvi_mpc_maize.parquet" "$table"
 fi
