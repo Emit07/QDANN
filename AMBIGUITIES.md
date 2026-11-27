@@ -798,9 +798,19 @@ that mean, while `tune.save` shipped seed 0 alone.
 across seeds. A pixel's raw county mean is then exactly the gate's seed mean. One-seed
 files still load as before. Prediction costs 3×. **Decided (Ale, 2026-11-27).**
 
-**Not yet measured.** The conformal margin was calibrated on single-seed held-out folds.
-The ensemble's interval coverage has not been rechecked. Averaging the seeds' quantiles
-probably narrows q10–q90 a little, while the point error falls too.
-**Must be rechecked before the lab handoff** (Ale, 2026-11-27; plan Stage 3, Lab).
+**Rechecked (2026-11-27, `data/ship/ensemble.py`, `ensemble.json`).** The ensemble was rerun
+on tune's 5 held-out folds of the 2008–2023 table: three heads per fold, averaged, and the
+margin refitted on the averaged band. Each head alone was scored on the same calibration
+halves. Means over folds:
+
+| | coverage (80% nominal) | margin t/ha | width t/ha | RMSE t/ha | within-year R2 |
+|---|---|---|---|---|---|
+| 3-seed ensemble | 83.3% (folds 79.7–89.3) | 0.276 | 1.36 | 0.542 | 0.744 |
+| single head (15) | 84.4% (76.6–92.0) | 0.332 | 1.47 | 0.566 | 0.719 |
+
+Coverage holds, and the intervals are 0.11 t/ha narrower. The ensemble's RMSE beats every
+single head in every fold. The shipped `qdann_maize.pt` carries the ensemble's margin, 0.276. This is coverage of county-year
+yields. The pixel and 5′ low/high grids apply the same county-scale margin, which is
+untested at cell scale and probably too narrow there (no pixel truth in Iowa).
 
 `departure` -- decided by Ale
