@@ -10,8 +10,9 @@ The gridded-land-sector-emissions repo reads SPAM-style grids of 2160 x 4320 cel
 Area basis: NASS harvested area of grain (silage corn excluded), placed on CDL crop pixels.
 `--source nass` is the statistics-only baseline. Each county's NASS area and production are
 spread evenly over its CDL pixels. A withheld county pools with the others of its
-agricultural district under the district's OTHER (COMBINED) COUNTIES row. A county with
-neither stays uncovered and only lowers `cov`.
+agricultural district under the district's OTHER (COMBINED) COUNTIES row, or, where the
+district has none (Iowa from 2020), under the state's asd 99 row (#31). A county with
+none of these stays uncovered and only lowers `cov`.
 
   uv run python -m qdann.export --crop maize --years 2018 --state 19
 """
@@ -67,6 +68,8 @@ def spread(
     `pixels` maps each county to its (cells, counts); `stats` is one year of `nass.totals`.
     Every published unit's totals land on its pixels in proportion to pixel count, so the
     frame sums back to exactly the published totals of every unit that has pixels.
+    A county without its own row pools under its district's combined row, else its
+    state's asd 99 row (#31).
     """
     production = numpy.zeros(FRAME[0] * FRAME[1])
     area = numpy.zeros_like(production)
@@ -83,6 +86,8 @@ def spread(
             pools[fips] = [fips]
         elif districts.get(fips) in combined.index:
             pools.setdefault(districts[fips], []).append(fips)
+        elif f"{fips[:2]}-99" in combined.index:  # NASS pools statewide from 2020 (#31)
+            pools.setdefault(f"{fips[:2]}-99", []).append(fips)
 
     for unit, members in pools.items():
         row = published.loc[unit] if unit in published.index else combined.loc[unit]

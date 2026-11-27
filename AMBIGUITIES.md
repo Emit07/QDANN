@@ -761,3 +761,25 @@ leave Landsat 7 out from 2022, `L7_LAST=2021`, the scripts' default.**
 the 2019–2021 reads, which keep Landsat 7 under either choice.
 
 `departure` -- decided by Ale
+
+## 31. From 2020 NASS pools withheld counties statewide, not by district
+
+**Paper.** Not covered (the 5′ export is the lab's frame, not the paper's).
+
+**Problem.** Through 2019 Iowa's "OTHER (COMBINED) COUNTIES" rows (county 998) are per
+agricultural district (`asd` 10–90). From 2020 there is one per state, `asd 99`: 101 M bu in
+2020, 335 M in 2021, 14 M in 2022, 269 M in 2023 (QuickStats, fetched 2026-11-27).
+`export.spread` pooled a withheld county only with its own district's row, so for 2020+ that
+production landed on no pixel (a warning only).
+
+**Choice.** A withheld county whose district has no combined row pools into its state's
+`<state>-99` row, spread by CDL pixel count like the district rows. The district row wins
+where both exist. Totals stay conserved. As with district rows, any county without its own
+row joins the pool, including one absent from `districts` or with one half suppressed.
+
+**Not known.** NASS's membership rule for a 99 row in a year that also has district rows.
+Iowa never has both (district rows through 2019, `19-99` only from 2020); other states are
+unchecked. `predict.frames` keeps only the requested counties' rows, so it never pools
+withheld counties (their `anchored_P` is 0); that predates this change and is a guard.
+
+`assumption`

@@ -113,7 +113,7 @@ def totals(
     district whose withheld counties it pools (`fips` None). `asd` is "<state>-<asd_code>".
     Only a unit-year with both halves published keeps a row. `districts` maps every county
     any record names, including a suppressed one, to its district, so a withheld county can
-    still be pooled with its district's combined row.
+    still be pooled with its district's combined row (from 2020, the statewide asd 99 row; #31).
     """
     sums: dict[tuple[str | None, str, int], list[float]] = collections.defaultdict(
         lambda: [0.0, 0.0]

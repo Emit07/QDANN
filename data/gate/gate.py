@@ -141,7 +141,7 @@ def score(floor: int = 20) -> list[dict]:
     table = weather.read(SOURCE).set_index(["fips", "year"])
     rows = []
     for fips in counties():
-        for year in (2016, 2018, 2019, 2021):
+        for year in range(2016, 2024):
             f = features(fips, year, floor)
             b = baselines(t, fips, year)
             if f is None or not b:

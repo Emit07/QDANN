@@ -44,3 +44,22 @@ def test_published_and_withheld_totals_are_conserved_and_cov_marks_the_gap():
     # 19001's 1000 t split 3:1; 19-10's 540 t split over 2 + 4 pixels
     numpy.testing.assert_allclose(p[:4], [750.0, 250.0 + 180.0, 360.0, 0.0])
     numpy.testing.assert_allclose(cov[:4], [1.0, 1.0, 1.0, 0.0])
+
+
+def test_withheld_counties_pool_into_the_statewide_row_when_no_district_row():
+    # from 2020 Iowa publishes one "OTHER COUNTIES" row for the state (asd 99)
+    pixels = {
+        "19001": (numpy.array([0]), numpy.array([1])),  # published
+        "19003": (numpy.array([1]), numpy.array([1])),  # withheld, district 19-10
+        "19005": (numpy.array([2]), numpy.array([3])),  # withheld, district 19-20
+    }
+    stats = _stats([["19001", "19-10", 2021, 10.0, 100.0], [None, "19-99", 2021, 40.0, 400.0]])
+    districts = {"19001": "19-10", "19003": "19-10", "19005": "19-20"}
+    grids = export.spread(pixels, stats, districts)
+    p, h = grids["P"].ravel(), grids["H"].ravel()
+    numpy.testing.assert_allclose(p[:3], [100.0, 100.0, 300.0])
+    assert p.sum() == 500.0 and h.sum() == 50.0
+    # where a district has its own combined row, that row wins over the state's
+    both = _stats([*stats.values.tolist(), [None, "19-10", 2021, 20.0, 200.0]])
+    p = export.spread(pixels, both, districts)["P"].ravel()
+    numpy.testing.assert_allclose(p[:3], [100.0, 200.0, 400.0])
