@@ -35,6 +35,13 @@ counties=(19169 19015 19153 19127 19079 19083 19099 19049 19187 19075
 years=(2020 2022 2023)
 fips=${counties[$((SLURM_ARRAY_TASK_ID % 25))]}
 year=${years[$((SLURM_ARRAY_TASK_ID / 25))]}
+# fail fast on missing shared inputs: a missing CDL or gridMET file would be downloaded by
+# every task at once, racing on the same .part file
+for f in data/source_mpc_maize_2008_2023_l7_2021.parquet data/tune_maize_2008_2023_l7_2021.json \
+         data/cdl/CDL_2022_19.tif data/cdl/CDL_2023_19.tif \
+         data/gridmet/{pr,srad,tmmn,tmmx,vpd}_{2020,2022,2023}.nc; do
+    [ -s "$f" ] || { echo "missing $f: run the setup in this file's header"; exit 1; }
+done
 feat=data/gate/features/${fips}_${year}.parquet
 [ -e "$feat" ] && { echo "have $feat"; exit 0; }
 $python data/gate/read.py --year "$year" --county "$fips" --landsat7-last 2021
